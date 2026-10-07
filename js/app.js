@@ -1,4 +1,4 @@
-import { initStore, store, resetDemo } from './store.js';
+import { initStore, store, resetDemo, isPermissionError } from './store.js';
 import { SECTIONS, DAY_NAMES, DAY_SHORT, ALL_DAYS, NORMAS, defaultTasks, defaultShiftTypes } from './seed.js';
 
 const $app = document.getElementById('app');
@@ -13,6 +13,8 @@ const S = {
   shiftTypes: [],
   tasks: [],
   settings: {},
+  owner: null,
+  pins: {},
   checklists: null,
   alerts: [],
   session: loadSession(),
@@ -86,7 +88,8 @@ boot();
 async function boot() {
   try {
     S.mode = await initStore();
-    await seedIfNeeded();
+    if (S.mode === 'demo') await seedDemo();
+    else await checkFirebaseSession();
   } catch (e) {
     console.error(e);
     S.error = e;
@@ -96,19 +99,44 @@ async function boot() {
   store.watch('workers', [], (d) => { S.workers = d.sort((a, b) => a.name.localeCompare(b.name)); render(); }, onErr);
   store.watch('shiftTypes', [], (d) => { S.shiftTypes = d.sort((a, b) => (a.start || '').localeCompare(b.start || '')); render(); }, onErr);
   store.watch('tasks', [], (d) => { S.tasks = d.sort((a, b) => sectionIdx(a.section) - sectionIdx(b.section) || (a.order || 0) - (b.order || 0)); render(); }, onErr);
-  store.watch('settings', [], (d) => { S.settings = d.find((x) => x.id === 'app') || {}; render(); }, onErr);
+  if (S.mode === 'demo') store.watch('settings', [], (d) => { S.settings = d.find((x) => x.id === 'app') || {}; render(); }, onErr);
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
   S.ready = true;
   window.addEventListener('hashchange', route);
   route();
 }
 
-async function seedIfNeeded() {
-  const s = await store.get('settings', 'app');
-  if (s) return;
+async function seedDefaults() {
+  if ((await store.list('tasks')).length) return;
   for (const t of defaultTasks()) await store.set('tasks', t.id, t);
   for (const st of defaultShiftTypes()) await store.set('shiftTypes', st.id, st);
+}
+
+async function seedDemo() {
+  if (await store.get('settings', 'app')) return;
+  await seedDefaults();
   await store.set('settings', 'app', { adminPin: '1234', createdAt: Date.now() });
+}
+
+const isOwner = () => !!S.owner && S.owner.uid === store.auth.uid();
+
+// Con Firebase: comprueba que la sesión guardada en el dispositivo siga siendo válida.
+async function checkFirebaseSession() {
+  S.owner = await store.get('settings', 'owner');
+  if (S.session?.role === 'admin' && !isOwner()) saveSession(null);
+  if (S.session?.role === 'worker') {
+    const sess = await store.get('sessions', store.auth.uid()).catch(() => null);
+    if (!sess || sess.workerId !== S.session.workerId) saveSession(null);
+  }
+}
+
+// Si Firebase deja de reconocer la sesión (PIN cambiado, persona desactivada…), vuelve al inicio.
+function sessionLost() {
+  if (!S.session) return;
+  saveSession(null);
+  stopAlerts();
+  toast('Tu sesión expiró. Vuelve a ingresar.', 'err');
+  go('');
 }
 
 function route() {
@@ -134,15 +162,25 @@ function useChecklists(from, to) {
     if (clSub.key !== key) return;
     S.checklists = docs;
     render();
-  }, (e) => { S.error = e; render(); });
+  }, (e) => {
+    clSub.key = null;
+    if (isPermissionError(e)) return sessionLost();
+    S.error = e;
+    render();
+  });
 }
 
 // Alertas para administración (tiempo real + notificación).
 let alertsUnsub = null;
 let alertsPrimed = false;
 const seenAlerts = new Set();
+let pinsUnsub = null;
 function ensureAlerts() {
   if (alertsUnsub) return;
+  pinsUnsub = store.watch('workerPins', [], (d) => {
+    S.pins = Object.fromEntries(d.map((x) => [x.id, x.pin]));
+    render();
+  }, (e) => isPermissionError(e) && sessionLost());
   alertsUnsub = store.watch('alerts', [['at', '>=', Date.now() - 14 * 864e5]], (docs) => {
     docs.sort((a, b) => b.at - a.at);
     if (alertsPrimed) docs.filter((a) => !seenAlerts.has(a.id) && !a.read).forEach(notifyAlert);
@@ -150,11 +188,14 @@ function ensureAlerts() {
     alertsPrimed = true;
     S.alerts = docs;
     render();
-  });
+  }, (e) => isPermissionError(e) && sessionLost());
 }
 function stopAlerts() {
   alertsUnsub?.();
   alertsUnsub = null;
+  pinsUnsub?.();
+  pinsUnsub = null;
+  S.pins = {};
   alertsPrimed = false;
   seenAlerts.clear();
 }
@@ -270,6 +311,19 @@ function viewPickWorker() {
 }
 
 function viewAdminLogin() {
+  if (S.mode === 'firebase') {
+    return `${topbar('Administración')}
+      <div class="page narrow">
+        <div class="card center login">
+          <div class="hero-icon">🔐</div>
+          <h2>Administración</h2>
+          ${S.owner
+            ? '<p class="muted">Entra con la cuenta de Google de administración.</p>'
+            : '<p>Primera vez: la cuenta de Google con la que entres ahora quedará como <b>única administradora</b> de la app.</p>'}
+          <button class="btn primary block" data-act="google-login">${store.auth.isGoogle() ? `Continuar como ${esc(store.auth.name())}` : 'Entrar con Google'}</button>
+        </div>
+      </div>`;
+  }
   return `${topbar('Administración')}
     <div class="page narrow">${pinPad('Administración', 'Ingresa el PIN de administración')}
     ${S.settings.adminPin === '1234' ? '<p class="muted center small">PIN inicial: 1234 (cámbialo en Ajustes)</p>' : ''}</div>`;
@@ -489,7 +543,7 @@ function adminTeam() {
     </div>
     <h2>Equipo</h2>
     <div class="card list">
-      ${S.workers.map((w) => `<button class="list-row ${w.active === false ? 'inactive' : ''}" data-act="edit-worker" data-id="${w.id}"><div><b>${esc(w.name)}</b><div class="small muted">PIN ${esc(w.pin)}${w.active === false ? ' · Inactivo' : ''}</div></div><span>✎</span></button>`).join('')}
+      ${S.workers.map((w) => `<button class="list-row ${w.active === false ? 'inactive' : ''}" data-act="edit-worker" data-id="${w.id}"><div><b>${esc(w.name)}</b><div class="small muted">PIN ${esc(S.pins[w.id] ?? '····')}${w.active === false ? ' · Inactivo' : ''}</div></div><span>✎</span></button>`).join('')}
       <button class="list-row add" data-act="edit-worker">＋ Agregar persona</button>
     </div>`;
 }
@@ -504,10 +558,10 @@ function adminSettings() {
         : perm === 'unsupported' ? '<div class="chip">Este navegador no soporta notificaciones</div>'
         : `<button class="btn small" data-act="notif">Activar notificaciones</button>${perm === 'denied' ? '<p class="small err">Están bloqueadas: habilítalas en la configuración del navegador.</p>' : ''}`}
     </div>
-    <div class="card">
+    ${S.mode === 'demo' ? `<div class="card">
       <h3>PIN de administración</h3>
       <button class="btn small" data-act="admin-pin">Cambiar PIN</button>
-    </div>
+    </div>` : `<div class="card"><h3>Cuenta de administración</h3><p class="small">${esc(store.auth.name())} (Google)</p></div>`}
     <div class="card">
       <h3>Datos</h3>
       <p class="small">Modo: <b>${S.mode === 'firebase' ? 'Firebase (compartido en tiempo real)' : 'Demo (solo este dispositivo)'}</b></p>
@@ -669,21 +723,25 @@ function closeModal() {
 }
 
 function editWorker(id) {
-  const w = S.workers.find((x) => x.id === id) || { name: '', pin: String(Math.floor(1000 + Math.random() * 9000)), active: true };
+  const w = S.workers.find((x) => x.id === id) || { name: '', active: true };
+  const curPin = id ? S.pins[id] ?? '' : String(Math.floor(1000 + Math.random() * 9000));
   openModal(id ? 'Editar persona' : 'Nueva persona', `
     <label>Nombre<input name="name" required maxlength="40" value="${esc(w.name)}"></label>
-    <label>PIN (4 dígitos)<input name="pin" required inputmode="numeric" pattern="[0-9]{4}" maxlength="4" value="${esc(w.pin)}"></label>
+    <label>PIN (4 dígitos)<input name="pin" required inputmode="numeric" pattern="[0-9]{4}" maxlength="4" value="${esc(curPin)}"></label>
     <label class="check"><input type="checkbox" name="active" ${w.active !== false ? 'checked' : ''}> Activo</label>`, {
     async onSubmit(f) {
       const name = f.get('name').trim();
       const pin = f.get('pin').trim();
-      if (S.workers.some((x) => x.id !== id && x.active !== false && String(x.pin) === pin)) return toast('Ese PIN ya lo usa otra persona', 'err');
-      await store.set('workers', id || uid(), { name, pin, active: f.get('active') === 'on' });
+      if (S.workers.some((x) => x.id !== id && x.active !== false && String(S.pins[x.id]) === pin)) return toast('Ese PIN ya lo usa otra persona', 'err');
+      const wid = id || uid();
+      await store.set('workerPins', wid, { pin });
+      await store.set('workers', wid, { name, active: f.get('active') === 'on' });
       closeModal();
     },
     onDelete: id && (async () => {
       if (!confirm(`¿Eliminar a ${w.name}? Su historial se conserva en los reportes. Si solo dejó de trabajar, mejor márcalo como inactivo.`)) return;
       await store.remove('workers', id);
+      await store.remove('workerPins', id);
       closeModal();
     }),
   });
@@ -795,6 +853,28 @@ function findChecklist(id) {
   return S.checklists?.find((c) => c.id === id);
 }
 
+async function workerLogin(w, pin) {
+  let ok = false;
+  if (w) {
+    if (S.mode === 'demo') {
+      ok = (await store.get('workerPins', w.id))?.pin === pin;
+    } else {
+      try {
+        await store.set('sessions', store.auth.uid(), { workerId: w.id, pin, at: Date.now() });
+        ok = true;
+      } catch (e) {
+        if (!isPermissionError(e)) throw e;
+      }
+    }
+  }
+  if (ok) {
+    saveSession({ role: 'worker', workerId: w.id });
+    return go('turno');
+  }
+  S.ui.pinError = true;
+  render();
+}
+
 const ACTIONS = {
   pin(el) {
     const k = el.dataset.k;
@@ -810,21 +890,41 @@ const ACTIONS = {
         } else S.ui.pinError = true;
       } else {
         const w = S.workers.find((x) => x.id === S.ui.pickWorker);
-        if (w && String(w.pin) === pin) {
-          saveSession({ role: 'worker', workerId: w.id });
-          return go('turno');
-        }
-        S.ui.pinError = true;
+        return workerLogin(w, pin);
       }
     }
     render();
   },
   'pick-worker'(el) { S.ui.pickWorker = el.dataset.id; S.ui.pin = ''; render(); },
   'pick-back'() { S.ui.pickWorker = null; render(); },
-  logout() {
+  async logout() {
+    const role = S.session?.role;
     saveSession(null);
     stopAlerts();
+    if (S.mode === 'firebase') {
+      if (role === 'worker') await store.remove('sessions', store.auth.uid()).catch(() => {});
+      if (store.auth.isGoogle()) await store.auth.anon();
+      location.hash = '';
+      return location.reload();
+    }
     go('');
+  },
+  async 'google-login'() {
+    if (!store.auth.isGoogle()) await store.auth.google();
+    if (!store.auth.isGoogle()) return;
+    S.owner = await store.get('settings', 'owner');
+    if (!S.owner) {
+      if (!confirm(`¿Registrar a ${store.auth.name()} como administradora de la app? Solo esta cuenta podrá administrar.`)) return store.auth.anon();
+      await store.set('settings', 'owner', { uid: store.auth.uid(), at: Date.now() });
+      S.owner = await store.get('settings', 'owner');
+      await seedDefaults();
+    }
+    if (!isOwner()) {
+      await store.auth.anon();
+      return toast('Esta cuenta de Google no es la administradora de la app.', 'err');
+    }
+    saveSession({ role: 'admin' });
+    location.reload();
   },
   expand(el) {
     const id = el.dataset.id;
@@ -1010,7 +1110,7 @@ document.addEventListener('submit', (e) => {
 });
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && S.modal) closeModal();
-  const pinView = (S.route.path === 'admin' && S.session?.role !== 'admin') || (S.route.path === 'equipo' && S.ui.pickWorker);
+  const pinView = (S.route.path === 'admin' && S.mode === 'demo' && S.session?.role !== 'admin') || (S.route.path === 'equipo' && S.ui.pickWorker);
   if (pinView && !S.modal && (/^[0-9]$/.test(e.key) || e.key === 'Backspace')) {
     ACTIONS.pin({ dataset: { k: e.key === 'Backspace' ? '⌫' : e.key } });
   }

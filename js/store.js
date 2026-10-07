@@ -27,7 +27,10 @@ export const store = {
   list: (c, where) => backend.list(c, where || []),
   watch: (c, where, cb, onError) => backend.watch(c, where || [], cb, onError),
   exportAll: () => backend.exportAll(),
+  get auth() { return backend.auth; },
 };
+
+export const isPermissionError = (e) => /permission|insufficient/i.test(String(e?.code || e?.message || e));
 
 function withoutId(d) {
   const { id, ...rest } = d;
@@ -42,16 +45,38 @@ async function firebaseBackend(cfg) {
   ]);
   const app = appM.initializeApp(cfg);
   const db = fs.initializeFirestore(app, { ignoreUndefinedProperties: true });
+  const auth = authM.getAuth(app);
   try {
-    await authM.signInAnonymously(authM.getAuth(app));
+    await authM.getRedirectResult(auth);
   } catch (e) {
-    console.warn('No se pudo iniciar sesión anónima en Firebase:', e);
+    console.warn(e);
   }
+  await auth.authStateReady();
+  if (!auth.currentUser) await authM.signInAnonymously(auth);
   const q = (c, where) => fs.query(fs.collection(db, c), ...where.map(([f, o, v]) => fs.where(f, o, v)));
   const toDoc = (s) => ({ ...s.data(), id: s.id });
-  const COLLECTIONS = ['settings', 'workers', 'shiftTypes', 'tasks', 'checklists', 'alerts'];
+  const COLLECTIONS = ['workers', 'workerPins', 'shiftTypes', 'tasks', 'checklists', 'alerts'];
   return {
     mode: 'firebase',
+    auth: {
+      uid: () => auth.currentUser?.uid || null,
+      isGoogle: () => !!auth.currentUser && !auth.currentUser.isAnonymous,
+      name: () => auth.currentUser?.displayName || auth.currentUser?.email || '',
+      async google() {
+        const provider = new authM.GoogleAuthProvider();
+        provider.setCustomParameters({ prompt: 'select_account' });
+        try {
+          await authM.signInWithPopup(auth, provider);
+        } catch (e) {
+          if (/popup-blocked|operation-not-supported/.test(e.code || '')) return authM.signInWithRedirect(auth, provider);
+          throw e;
+        }
+      },
+      async anon() {
+        await authM.signOut(auth);
+        await authM.signInAnonymously(auth);
+      },
+    },
     async get(c, id) {
       const s = await fs.getDoc(fs.doc(db, c, id));
       return s.exists() ? toDoc(s) : null;
@@ -113,6 +138,7 @@ function localBackend() {
 
   return {
     mode: 'demo',
+    auth: { uid: () => 'demo', isGoogle: () => false, name: () => '', async google() {}, async anon() {} },
     async get(c, id) {
       const d = col(c)[id];
       return d ? { ...clone(d), id } : null;

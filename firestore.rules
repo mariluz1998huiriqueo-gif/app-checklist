@@ -1,9 +1,104 @@
 rules_version = '2';
+
+// Reglas de seguridad de la app Checklist Heladería.
+//
+// - Administración: la cuenta de Google registrada en settings/owner
+//   (la primera que entra a "Administración" queda como dueña).
+// - Equipo: sesión anónima + PIN. El PIN se valida aquí, en el servidor;
+//   la colección workerPins nunca se puede leer desde la app del equipo.
+// - El equipo solo puede marcar tareas, terminar su turno y crear avisos.
+
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Solo dispositivos que abren la app (sesión anónima de Firebase) pueden leer/escribir.
-    match /{document=**} {
-      allow read, write: if request.auth != null;
+
+    function signedIn() {
+      return request.auth != null;
+    }
+    function isAdmin() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/settings/owner)
+        && get(/databases/$(database)/documents/settings/owner).data.uid == request.auth.uid;
+    }
+    function session() {
+      return get(/databases/$(database)/documents/sessions/$(request.auth.uid)).data;
+    }
+    // Trabajador con sesión válida: el PIN de su sesión sigue siendo el vigente y está activo.
+    function isWorker() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/sessions/$(request.auth.uid))
+        && session().pin == get(/databases/$(database)/documents/workerPins/$(session().workerId)).data.pin
+        && get(/databases/$(database)/documents/workers/$(session().workerId)).data.active == true;
+    }
+
+    // Dueña de la app: se registra una sola vez, con una cuenta de Google.
+    match /settings/owner {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.auth.token.firebase.sign_in_provider == 'google.com'
+        && request.resource.data.keys().hasOnly(['uid', 'at'])
+        && request.resource.data.uid == request.auth.uid;
+      allow update: if isAdmin()
+        && request.resource.data.uid == resource.data.uid;
+      allow delete: if false;
+    }
+    match /settings/{doc} {
+      allow read, write: if isAdmin();
+    }
+
+    // Nombres del equipo, tareas y tipos de turno: lectura para todos, edición solo administración.
+    match /workers/{id} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+    match /tasks/{id} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+    match /shiftTypes/{id} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+
+    // PIN del equipo: solo administración.
+    match /workerPins/{id} {
+      allow read, write: if isAdmin();
+    }
+
+    // Sesión de un trabajador: solo se crea si el PIN es correcto.
+    match /sessions/{uid} {
+      allow read, delete: if signedIn() && request.auth.uid == uid;
+      allow create, update: if signedIn() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['workerId', 'pin', 'at'])
+        && request.resource.data.workerId is string
+        && request.resource.data.pin is string
+        && exists(/databases/$(database)/documents/workerPins/$(request.resource.data.workerId))
+        && get(/databases/$(database)/documents/workerPins/$(request.resource.data.workerId)).data.pin == request.resource.data.pin
+        && get(/databases/$(database)/documents/workers/$(request.resource.data.workerId)).data.active == true;
+    }
+
+    // Checklists de cada turno.
+    match /checklists/{id} {
+      allow read: if isAdmin() || isWorker();
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin() || (
+        isWorker()
+        // Solo puede cambiar las marcas de tareas y los horarios del turno…
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['items', 'lastActivity', 'startedAt', 'closedAt'])
+        // …sin agregar ni quitar tareas…
+        && request.resource.data.items.keys().hasOnly(resource.data.items.keys())
+        && resource.data.items.keys().hasOnly(request.resource.data.items.keys())
+        // …y solo la persona del turno puede cerrarlo.
+        && (!('closedAt' in request.resource.data.diff(resource.data).affectedKeys())
+            || resource.data.workerId == session().workerId)
+      );
+    }
+
+    // Avisos: el equipo los crea, administración los lee y gestiona.
+    match /alerts/{id} {
+      allow create: if isAdmin() || (isWorker() && request.resource.data.byWorkerId == session().workerId
+                                     || isWorker() && request.resource.data.type == 'incompleto'
+                                        && request.resource.data.forWorkerId == session().workerId);
+      allow read, update, delete: if isAdmin();
     }
   }
 }

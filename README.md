@@ -19,7 +19,7 @@ App web para el celular: cada trabajador ve y marca las tareas de **su turno**, 
 - **Equipo:** agregar personas con su PIN y compartir el link de la app.
 - **Ajustes:** activar notificaciones, cambiar el PIN de administración y descargar un respaldo.
 
-PIN inicial de administración: **1234** (cámbialo en Ajustes).
+Administración entra con su cuenta de Google (en modo demo, con el PIN 1234).
 
 ---
 
@@ -30,31 +30,42 @@ Si `js/config.js` está vacío, la app funciona en **modo demo**: los datos qued
 ## Paso 2 – Conectar Firebase (gratis) para compartir datos en tiempo real
 
 1. Entra a <https://console.firebase.google.com> con tu cuenta de Google → **Crear proyecto** (puedes desactivar Google Analytics).
-2. En el menú **Compilación → Firestore Database** → **Crear base de datos** → elige la ubicación `southamerica-east1` (São Paulo) → modo **producción**.
-3. En la pestaña **Reglas** de Firestore, borra lo que haya, pega el contenido del archivo `firestore.rules` de este repositorio y presiona **Publicar**.
-4. En **Compilación → Authentication** → **Comenzar** → pestaña **Sign-in method** → activa **Anónimo**.
-5. En el engranaje ⚙️ **Configuración del proyecto** → sección “Tus apps” → ícono **`</>`** (Web) → ponle un nombre → **Registrar app**. Firebase te mostrará un bloque `firebaseConfig = { apiKey: ..., ... }`.
-6. Copia esos valores en `js/config.js` (en GitHub: abre el archivo → ✏️ editar → pega → *Commit changes*).
+2. Menú **Compilación → Firestore Database** → **Crear base de datos** → ubicación `southamerica-east1` (São Paulo) → modo **producción**.
+3. Pestaña **Reglas** de Firestore: borra todo, pega el contenido del archivo [`firestore.rules`](firestore.rules) y presiona **Publicar**.
+4. Menú **Compilación → Authentication** → **Comenzar** → pestaña **Sign-in method**:
+   - activa **Anónimo** (lo usa el equipo, con su PIN);
+   - activa **Google** (lo usas tú para Administración) y elige tu correo como correo de asistencia.
+5. En la misma sección, pestaña **Configuración → Dominios autorizados** → **Agregar dominio** → `TU-USUARIO.github.io`.
+6. Engranaje ⚙️ **Configuración del proyecto** → “Tus apps” → ícono **`</>`** (Web) → registra la app. Copia los valores de `firebaseConfig` en [`js/config.js`](js/config.js).
 
-> Los valores de `firebaseConfig` no son secretos: Firebase está diseñado para que vayan en la página. La protección la dan las reglas del paso 3.
+> Los valores de `firebaseConfig` no son secretos (toda app web de Firebase los muestra). La protección la dan las reglas del paso 3.
 
-## Paso 3 – Publicar la app (link para el equipo)
+## Paso 3 – Publicar la app (link para el equipo) con GitHub Pages
 
-**Opción A: GitHub Pages** (requiere que el repositorio sea **público** en el plan gratuito de GitHub)
-1. Junta esta rama con `main` (con un Pull Request, o pídele a Claude que lo haga).
-2. En GitHub: **Settings → Pages** → *Source*: “Deploy from a branch” → rama `main`, carpeta `/ (root)` → **Save**.
-3. En 1 o 2 minutos tendrás un link como `https://TU-USUARIO.github.io/app-checklist/`.
+1. En GitHub: **Settings → General → Danger Zone → Change visibility → Public**.
+2. **Settings → Pages** → *Source*: “Deploy from a branch” → elige la rama principal del repositorio y la carpeta `/ (root)` → **Save**.
+3. En 1–2 minutos tendrás el link: `https://TU-USUARIO.github.io/app-checklist/`.
 
-**Opción B: repositorio privado.** Usa Firebase Hosting o Netlify (arrastrando la carpeta a <https://app.netlify.com/drop>).
+## Paso 4 – Primer ingreso
 
-Luego, en la app: **Administración → Equipo → Copiar / compartir** y envía el link por WhatsApp. Cada persona puede usar “Agregar a pantalla de inicio” para tenerla como app.
+1. Abre el link → **Administración → Entrar con Google**. **La primera cuenta que entra queda como única administradora**: hazlo tú apenas publiques.
+2. En **Equipo**, agrega a cada persona con su PIN. En **Turnos**, asigna la semana.
+3. Comparte el link con el equipo desde **Equipo → Copiar / compartir**.
 
 ---
+
+## Seguridad
+
+- **Administración:** solo la cuenta de Google registrada puede ver reportes, PIN, avisos y editar tareas, turnos y personas.
+- **Equipo:** el PIN se comprueba en el servidor de Firebase y nunca se envía a los celulares. Con una sesión válida, cada persona solo puede marcar tareas, terminar **su** turno y generar avisos. Si cambias el PIN de alguien o lo desactivas, pierde el acceso al instante.
+- **Sin sesión**, alguien con el link solo puede ver los nombres del equipo y la lista de tareas.
+- El código es público, pero no contiene datos ni contraseñas: todo vive en tu Firebase.
+- Las reglas tienen pruebas automáticas (emulador de Firebase).
 
 ## Notas y límites
 
 - **Notificaciones:** los avisos llegan con sonido y notificación mientras tengas la app abierta (en el celular o el computador, aunque esté en segundo plano). Para que lleguen con la app completamente cerrada se necesita un servidor de notificaciones push. Se puede agregar más adelante, por ejemplo con avisos por WhatsApp o Telegram.
-- **Seguridad:** los PIN son una barrera simple para que nadie marque por otra persona, no una seguridad bancaria. No compartas el link fuera del equipo.
+- **PIN de 4 dígitos:** usa PIN distintos y no obvios (no 1234). Un PIN de 4 dígitos no es seguridad bancaria, pero alcanza para que nadie marque por otra persona.
 - **Cambios en tareas:** se aplican a los turnos que asignes desde ese momento. Para actualizar los turnos ya asignados, usa *Tareas → Aplicar cambios a turnos de hoy en adelante*. Lo que ya está marcado se conserva.
 - **Tareas “Durante el turno”:** no aparecen como pendientes para el turno siguiente, porque son tareas continuas.
 - Si una tarea no se marca, en los reportes cuenta como **no hecha** una vez que termina el turno o el día.
