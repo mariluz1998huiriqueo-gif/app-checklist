@@ -67,6 +67,8 @@ Si `js/config.js` está vacío, la app funciona en **modo demo**: los datos qued
 - **Notificaciones:** los avisos llegan con sonido y notificación mientras tengas la app abierta (en el celular o el computador, aunque esté en segundo plano). Para que lleguen con la app completamente cerrada se necesita un servidor de notificaciones push. Se puede agregar más adelante, por ejemplo con avisos por WhatsApp o Telegram.
 - **PIN de 4 dígitos:** usa PIN distintos y no obvios (no 1234). Un PIN de 4 dígitos no es seguridad bancaria, pero alcanza para que nadie marque por otra persona.
 - **Cambios en tareas:** se aplican a los turnos que asignes desde ese momento. Para actualizar los turnos ya asignados, usa *Tareas → Aplicar cambios a turnos de hoy en adelante*. Lo que ya está marcado se conserva.
+- **Tareas compartidas (👥):** si varias personas coinciden el mismo día (por ejemplo, dos o más en el cierre), cuando una marca una tarea compartida queda lista para todas, con el nombre de quien la hizo. Por defecto son compartidas Apertura, Tarea especial y Cierre; se cambia por tarea en *Tareas*.
+- **PIN:** se ingresa una sola vez por celular. La app lo recuerda hasta que la persona presione “Salir” o administración le cambie el PIN.
 - **Tareas “Durante el turno”:** no aparecen como pendientes para el turno siguiente, porque son tareas continuas.
 - Si una tarea no se marca, en los reportes cuenta como **no hecha** una vez que termina el turno o el día.
 

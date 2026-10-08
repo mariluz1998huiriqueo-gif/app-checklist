@@ -38,6 +38,7 @@ const fmtDate = (s) => parseYmd(s).toLocaleDateString('es-CL', { weekday: 'long'
 const fmtShort = (s) => parseYmd(s).toLocaleDateString('es-CL', { weekday: 'short', day: 'numeric', month: 'short' });
 const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-4);
 const pct = (a, b) => (b ? Math.round((a / b) * 100) : 0);
+const isShared = (t) => t.shared ?? t.section !== 'durante';
 const sectionName = (id) => SECTIONS.find((s) => s.id === id)?.name || id;
 const sectionIdx = (id) => { const i = SECTIONS.findIndex((s) => s.id === id); return i < 0 ? 99 : i; };
 const wName = (id, fallback) => S.workers.find((w) => w.id === id)?.name || fallback || 'Alguien';
@@ -520,7 +521,7 @@ function adminTasks() {
       <div class="card list">
         ${ts.map((t) => {
           const days = t.days && t.days.length < 7 ? t.days.map((d) => DAY_NAMES[d]).join(', ') : '';
-          return `<button class="list-row ${t.active === false ? 'inactive' : ''}" data-act="edit-task" data-id="${t.id}"><div>${esc(t.text)}${days ? `<div class="small muted">Solo: ${esc(days)}</div>` : ''}${t.active === false ? '<div class="small muted">Desactivada</div>' : ''}</div><span>✎</span></button>`;
+          return `<button class="list-row ${t.active === false ? 'inactive' : ''}" data-act="edit-task" data-id="${t.id}"><div>${esc(t.text)}${days ? `<div class="small muted">Solo: ${esc(days)}</div>` : ''}${isShared(t) ? '<div class="small muted">👥 Compartida</div>' : ''}${t.active === false ? '<div class="small muted">Desactivada</div>' : ''}</div><span>✎</span></button>`;
         }).join('')}
         <button class="list-row add" data-act="edit-task" data-section="${s.id}">＋ Agregar tarea</button>
       </div>`;
@@ -618,7 +619,7 @@ function computeReport(cls) {
       s.total++;
       day.total++;
       if (it.done) {
-        if (it.doneBy && it.doneBy !== c.workerId) {
+        if (it.doneBy && it.doneBy !== c.workerId && (it.covered || !it.shared)) {
           s.coveredByOthers++;
           ensure(it.doneBy).coveredOthers++;
           covers.push({ date: c.date, text: it.text, owner: c.workerId, ownerName: c.workerName, by: it.doneBy, at: it.doneAt });
@@ -777,13 +778,14 @@ function editTask(id, section) {
     <fieldset><legend>Días</legend><div class="days">
     ${[1, 2, 3, 4, 5, 6, 0].map((d) => `<label class="day"><input type="checkbox" name="days" value="${d}" ${days.includes(d) ? 'checked' : ''}><span>${DAY_SHORT[d]}</span></label>`).join('')}
     </div></fieldset>
+    <label class="check"><input type="checkbox" name="shared" ${isShared(t) ? 'checked' : ''}> 👥 Compartida: si varias personas coinciden ese día, cuando una la marca queda lista para todas</label>
     <label class="check"><input type="checkbox" name="active" ${t.active !== false ? 'checked' : ''}> Activa</label>`, {
     async onSubmit(f) {
       const d = f.getAll('days').map(Number).sort();
       if (!d.length) return toast('Elige al menos un día', 'err');
       const sec = f.get('section');
       const order = id && t.section === sec ? t.order : Math.max(0, ...S.tasks.filter((x) => x.section === sec).map((x) => x.order || 0)) + 1;
-      await store.set('tasks', id || uid(), { text: f.get('text').trim(), section: sec, days: d, order, active: f.get('active') === 'on' });
+      await store.set('tasks', id || uid(), { text: f.get('text').trim(), section: sec, days: d, order, shared: f.get('shared') === 'on', active: f.get('active') === 'on' });
       closeModal();
     },
     onDelete: id && (async () => {
@@ -807,14 +809,24 @@ function changeAdminPin() {
 
 // ───────────────────────── acciones ─────────────────────────
 
-function buildItems(st, date, prev) {
+// Estado actual de una tarea compartida en otros turnos del mismo día (si alguien ya la hizo).
+function sharedDoneElsewhere(date, tid, exceptId) {
+  for (const c of S.checklists || []) {
+    const it = c.date === date && c.id !== exceptId ? c.items?.[tid] : null;
+    if (it?.shared && it.done) return it;
+  }
+  return null;
+}
+
+function buildItems(st, date, prev, selfId) {
   const wd = parseYmd(date).getDay();
   const out = {};
   S.tasks
     .filter((t) => t.active !== false && (st.sections || []).includes(t.section) && (t.days || ALL_DAYS).includes(wd))
     .forEach((t) => {
-      const p = prev?.[t.id];
-      out[t.id] = { text: t.text, section: t.section, order: t.order || 0, done: !!p?.done, doneAt: p?.doneAt || null, doneBy: p?.doneBy || null };
+      const shared = isShared(t);
+      const p = prev?.[t.id]?.done ? prev[t.id] : shared ? sharedDoneElsewhere(date, t.id, selfId) : null;
+      out[t.id] = { text: t.text, section: t.section, order: t.order || 0, shared, done: !!p?.done, doneAt: p?.doneAt || null, doneBy: p?.doneBy || null, covered: !!p?.covered };
     });
   // Conserva tareas ya marcadas aunque hayan sido quitadas del turno.
   Object.entries(prev || {}).forEach(([k, p]) => { if (p.done && !out[k]) out[k] = p; });
@@ -841,7 +853,7 @@ async function assign(workerId, date, shiftTypeId, existing) {
     shiftName: st.name,
     start: st.start,
     end: st.end,
-    items: buildItems(st, date, existing?.items),
+    items: buildItems(st, date, existing?.items, id),
     createdAt: existing?.createdAt || Date.now(),
     startedAt: existing?.startedAt || null,
     lastActivity: existing?.lastActivity || null,
@@ -873,6 +885,26 @@ async function workerLogin(w, pin) {
   }
   S.ui.pinError = true;
   render();
+}
+
+function markPatch(tid, done, by, now, covered = false) {
+  return {
+    [`items.${tid}.done`]: done,
+    [`items.${tid}.doneAt`]: done ? now : null,
+    [`items.${tid}.doneBy`]: done ? by : null,
+    [`items.${tid}.covered`]: done && covered,
+  };
+}
+
+// Tarea compartida: replica la marca en los turnos del mismo día que tienen esa tarea.
+async function syncShared(c, tid, done, by, now, covered = false) {
+  const others = (S.checklists || []).filter((o) => o.id !== c.id && o.date === c.date && o.items?.[tid]?.shared);
+  for (const o of others) {
+    const oi = o.items[tid];
+    // Al desmarcar, solo se quita en los turnos donde la marca era de esta misma persona.
+    if (done ? oi.done : !oi.done || oi.doneBy !== by) continue;
+    await store.update('checklists', o.id, markPatch(tid, done, by, now, covered));
+  }
 }
 
 const ACTIONS = {
@@ -940,12 +972,11 @@ const ACTIONS = {
     const done = !it.done;
     const now = Date.now();
     await store.update('checklists', c.id, {
-      [`items.${tid}.done`]: done,
-      [`items.${tid}.doneAt`]: done ? now : null,
-      [`items.${tid}.doneBy`]: done ? me : null,
+      ...markPatch(tid, done, me, now),
       lastActivity: now,
       startedAt: c.startedAt || now,
     });
+    if (it.shared) await syncShared(c, tid, done, me, now);
   },
   async cover(el) {
     const c = findChecklist(el.dataset.cl);
@@ -957,11 +988,8 @@ const ACTIONS = {
     if (!confirm(`¿Confirmas que hiciste «${it.text}», que quedó pendiente del turno de ${owner}?`)) return;
     const me = S.session.workerId;
     const now = Date.now();
-    await store.update('checklists', c.id, {
-      [`items.${tid}.done`]: true,
-      [`items.${tid}.doneAt`]: now,
-      [`items.${tid}.doneBy`]: me,
-    });
+    await store.update('checklists', c.id, markPatch(tid, true, me, now, true));
+    if (it.shared) await syncShared(c, tid, true, me, now, true);
     await store.set('alerts', uid(), {
       type: 'cubierta', at: now, date: c.date, read: false, text: it.text, taskId: tid, checklistId: c.id,
       byWorkerId: me, byName: wName(me), forWorkerId: c.workerId, forName: owner,
@@ -1024,7 +1052,7 @@ const ACTIONS = {
     for (const c of cls) {
       const st = S.shiftTypes.find((s) => s.id === c.shiftTypeId);
       if (!st) continue;
-      await store.update('checklists', c.id, { items: buildItems(st, c.date, c.items) });
+      await store.update('checklists', c.id, { items: buildItems(st, c.date, c.items, c.id) });
     }
     toast('Turnos actualizados');
   },
