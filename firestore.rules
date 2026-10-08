@@ -87,18 +87,27 @@ service cloud.firestore {
         // …sin agregar ni quitar tareas…
         && request.resource.data.items.keys().hasOnly(resource.data.items.keys())
         && resource.data.items.keys().hasOnly(request.resource.data.items.keys())
-        // …y solo la persona del turno puede cerrarlo.
+        // …y solo la persona del turno puede cerrarlo (o un compañero, si ella no tiene celular).
         && (!('closedAt' in request.resource.data.diff(resource.data).affectedKeys())
-            || resource.data.workerId == session().workerId)
+            || resource.data.workerId == session().workerId
+            || get(/databases/$(database)/documents/workers/$(resource.data.workerId)).data.get('noPhone', false) == true)
       );
     }
 
     // Avisos: el equipo los crea, administración los lee y gestiona.
     match /alerts/{id} {
-      allow create: if isAdmin() || (isWorker() && request.resource.data.byWorkerId == session().workerId
-                                     || isWorker() && request.resource.data.type == 'incompleto'
-                                        && request.resource.data.forWorkerId == session().workerId);
+      allow create: if isAdmin() || (isWorker() && request.resource.data.byWorkerId == session().workerId);
       allow read, update, delete: if isAdmin();
+    }
+
+    // Tareas postergadas para otro día.
+    match /carry/{id} {
+      allow read: if isAdmin() || isWorker();
+      allow create: if isAdmin() || (isWorker() && request.resource.data.by == session().workerId
+                                     && request.resource.data.done == false);
+      allow update: if isAdmin() || (isWorker()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['done', 'doneBy', 'doneAt', 'markedBy', 'toDate', 'note']));
+      allow delete: if isAdmin();
     }
   }
 }

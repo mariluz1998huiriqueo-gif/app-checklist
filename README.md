@@ -5,16 +5,20 @@ App web para el celular: cada trabajador ve y marca las tareas de **su turno**, 
 ## Qué hace
 
 **Para el equipo (desde el celular)**
-- Elige su nombre y entra con un PIN de 4 dígitos.
-- Ve solo las tareas de su turno de hoy (Mañana, Tarde, Día completo…), separadas en Apertura / Durante el turno / Tarea especial del día / Cierre.
-- Marca cada tarea al hacerla (queda registrada la hora).
-- Ve los **pendientes de turnos anteriores** (de hoy o de ayer) y puede marcarlos si los hace: **administración recibe un aviso**.
+- Elige su nombre y entra con su PIN (de 2 a 6 dígitos). El celular lo recuerda: no hay que volver a ingresarlo.
+- Ve solo las tareas de su turno de hoy (Apertura / Tareas especiales del día / Cierre) y las marca al hacerlas.
+- **Durante el día** y **Normas** aparecen como listas desplegables de recordatorio (no se marcan, porque no se usa el celular en el turno).
+- **Tareas con hora y alarma** (ej. sacar la basura martes, jueves y sábado a las 18:00 porque pasa el camión): suena 15 minutos antes y a la hora.
+- **Tareas compartidas (👥):** si coinciden varias personas, cuando una marca la tarea queda lista para todas.
+- **Compañeras sin celular** (ej. Monse): los días que tiene turno, quien trabaje con ella ve una segunda columna de casillas para marcar lo que hizo ella.
+- **Dejar para otro día (⋯):** si una tarea no se alcanzó o se hizo a medias (ej. descongelar 1 de 3 refris), se deja pendiente con una nota para el día siguiente.
+- **Revisar turno anterior:** quien llega puede marcar lo que quedó sin hacer (**Lo hice**) o **Reportar** algo que quedó mal (ej. el agua quedó corriendo). Administración recibe un aviso.
 - Presiona “Terminar turno”. Si quedan tareas sin marcar, administración recibe un aviso.
 
 **Para administración**
 - **En vivo:** avance de cada turno de hoy, estado (sin iniciar / en curso / terminado / fuera de horario), hora de cada tarea y avisos.
 - **Turnos:** planilla semanal para asignar el turno de cada persona cada día, con la opción de copiar la semana anterior.
-- **Reportes:** hoy, ayer, esta semana, semana pasada, este mes o las fechas que elijas. Incluye el % de cumplimiento por persona y por día, las tareas no hechas, las tareas que más se olvidan y quién cubrió a quién. Se puede descargar en Excel (CSV).
+- **Reportes:** hoy, ayer, esta semana, semana pasada, este mes o las fechas que elijas. Incluye el % de cumplimiento por persona y por día, las tareas no hechas, reportadas y postergadas, **cuántas tareas hizo cada persona** (para ver quién trabajó más en un turno compartido), las tareas que más se olvidan y quién cubrió a quién. Se puede descargar en Excel (CSV).
 - **Tareas:** agregar, editar o desactivar tareas, y elegir qué días aplican.
 - **Equipo:** agregar personas con su PIN y compartir el link de la app.
 - **Ajustes:** activar notificaciones, cambiar el PIN de administración y descargar un respaldo.
@@ -65,11 +69,11 @@ Si `js/config.js` está vacío, la app funciona en **modo demo**: los datos qued
 ## Notas y límites
 
 - **Notificaciones:** los avisos llegan con sonido y notificación mientras tengas la app abierta (en el celular o el computador, aunque esté en segundo plano). Para que lleguen con la app completamente cerrada se necesita un servidor de notificaciones push. Se puede agregar más adelante, por ejemplo con avisos por WhatsApp o Telegram.
-- **PIN de 4 dígitos:** usa PIN distintos y no obvios (no 1234). Un PIN de 4 dígitos no es seguridad bancaria, pero alcanza para que nadie marque por otra persona.
+- **PIN:** de 2 a 6 dígitos, distinto para cada persona. Uno corto es fácil de recordar pero también de adivinar.
 - **Cambios en tareas:** se aplican a los turnos que asignes desde ese momento. Para actualizar los turnos ya asignados, usa *Tareas → Aplicar cambios a turnos de hoy en adelante*. Lo que ya está marcado se conserva.
 - **Tareas compartidas (👥):** si varias personas coinciden el mismo día (por ejemplo, dos o más en el cierre), cuando una marca una tarea compartida queda lista para todas, con el nombre de quien la hizo. Por defecto son compartidas Apertura, Tarea especial y Cierre; se cambia por tarea en *Tareas*.
-- **PIN:** se ingresa una sola vez por celular. La app lo recuerda hasta que la persona presione “Salir” o administración le cambie el PIN.
-- **Tareas “Durante el turno”:** no aparecen como pendientes para el turno siguiente, porque son tareas continuas.
+- **Sesión:** el PIN se ingresa una sola vez por celular. La app lo recuerda hasta que la persona presione “Salir” o administración le cambie el PIN.
+- **Alarmas:** suenan si la app está abierta en el celular (aunque sea en segundo plano). Si el celular cerró la app, no suenan.
 - Si una tarea no se marca, en los reportes cuenta como **no hecha** una vez que termina el turno o el día.
 
 ## Archivos

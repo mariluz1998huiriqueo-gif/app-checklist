@@ -1,5 +1,5 @@
 import { initStore, store, resetDemo, isPermissionError } from './store.js';
-import { SECTIONS, DAY_NAMES, DAY_SHORT, ALL_DAYS, NORMAS, defaultTasks, defaultShiftTypes } from './seed.js';
+import { SECTIONS, INFO_SECTIONS, DAY_NAMES, DAY_SHORT, ALL_DAYS, NORMAS, defaultTasks, defaultShiftTypes } from './seed.js';
 
 const $app = document.getElementById('app');
 const $modal = document.getElementById('modal');
@@ -16,6 +16,7 @@ const S = {
   owner: null,
   pins: {},
   checklists: null,
+  carry: [],
   alerts: [],
   session: loadSession(),
   route: { path: '', sub: '' },
@@ -38,7 +39,8 @@ const fmtDate = (s) => parseYmd(s).toLocaleDateString('es-CL', { weekday: 'long'
 const fmtShort = (s) => parseYmd(s).toLocaleDateString('es-CL', { weekday: 'short', day: 'numeric', month: 'short' });
 const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-4);
 const pct = (a, b) => (b ? Math.round((a / b) * 100) : 0);
-const isShared = (t) => t.shared ?? t.section !== 'durante';
+const isShared = (t) => t.shared ?? !INFO_SECTIONS.includes(t.section);
+const addMin = (hm, m) => { const [h, mi] = hm.split(':').map(Number); const x = h * 60 + mi + m; return `${pad(Math.floor(x / 60))}:${pad(x % 60)}`; };
 const sectionName = (id) => SECTIONS.find((s) => s.id === id)?.name || id;
 const sectionIdx = (id) => { const i = SECTIONS.findIndex((s) => s.id === id); return i < 0 ? 99 : i; };
 const wName = (id, fallback) => S.workers.find((w) => w.id === id)?.name || fallback || 'Alguien';
@@ -52,9 +54,11 @@ function saveSession(s) {
 }
 const go = (hash) => { location.hash = hash; };
 
+// Ítems marcables de un checklist (los recordatorios "Durante el día" no cuentan).
 function sortedItems(c) {
   return Object.entries(c.items || {})
     .map(([id, it]) => ({ ...it, id }))
+    .filter((it) => !INFO_SECTIONS.includes(it.section))
     .sort((a, b) => sectionIdx(a.section) - sectionIdx(b.section) || (a.order || 0) - (b.order || 0));
 }
 
@@ -82,6 +86,15 @@ function beep() {
   } catch {}
 }
 
+async function showNotification(title, body, tag) {
+  try {
+    if (!('Notification' in window) || Notification.permission !== 'granted') return;
+    const reg = await navigator.serviceWorker?.getRegistration();
+    if (reg) reg.showNotification(title, { body, tag, icon: 'icon.svg' });
+    else new Notification(title, { body });
+  } catch {}
+}
+
 // ───────────────────────── arranque ─────────────────────────
 
 boot();
@@ -103,6 +116,7 @@ async function boot() {
   if (S.mode === 'demo') store.watch('settings', [], (d) => { S.settings = d.find((x) => x.id === 'app') || {}; render(); }, onErr);
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
   S.ready = true;
+  setInterval(checkAlarms, 30000);
   window.addEventListener('hashchange', route);
   route();
 }
@@ -171,6 +185,36 @@ function useChecklists(from, to) {
   });
 }
 
+// Tareas postergadas para otro día (pendientes arrastrados).
+let carryUnsub = null;
+function useCarry() {
+  if (carryUnsub) return;
+  carryUnsub = store.watch('carry', [['done', '==', false]], (d) => {
+    S.carry = d.sort((a, b) => a.toDate.localeCompare(b.toDate));
+    render();
+  }, (e) => { carryUnsub = null; if (isPermissionError(e)) sessionLost(); });
+}
+
+// Alarmas de tareas con hora (ej. basura 18:00): 15 min antes y a la hora.
+function checkAlarms() {
+  if (S.session?.role !== 'worker' || !S.checklists) return;
+  const t = today();
+  const mine = S.checklists.find((c) => c.date === t && c.workerId === S.session.workerId);
+  if (!mine || mine.closedAt) return;
+  const now = nowHM();
+  for (const it of sortedItems(mine)) {
+    if (!it.time || it.done) continue;
+    for (const [at, label] of [[addMin(it.time, -15), `En 15 minutos (${it.time})`], [it.time, `Ahora (${it.time})`]]) {
+      const key = `alarm-${t}-${it.id}-${at}`;
+      if (now < at || now > addMin(at, 30)) continue;
+      try { if (localStorage.getItem(key)) continue; localStorage.setItem(key, '1'); } catch {}
+      toast(`⏰ ${label}: ${it.text}`, 'warn');
+      beep();
+      showNotification(`⏰ ${label}`, it.text, key);
+    }
+  }
+}
+
 // Alertas para administración (tiempo real + notificación).
 let alertsUnsub = null;
 let alertsPrimed = false;
@@ -205,6 +249,12 @@ function alertText(a) {
   if (a.type === 'cubierta') {
     return `${wName(a.byWorkerId, a.byName)} hizo «${a.text}», que quedó pendiente del turno de ${wName(a.forWorkerId, a.forName)} (${fmtShort(a.date)}).`;
   }
+  if (a.type === 'reporte') {
+    return `${wName(a.byWorkerId, a.byName)} reportó «${a.text}» del turno de ${wName(a.forWorkerId, a.forName)} (${fmtShort(a.date)})${a.checkedBy ? `, que estaba marcada por ${wName(a.checkedBy)}` : ''}${a.note ? `: “${a.note}”` : '.'}`;
+  }
+  if (a.type === 'postergada') {
+    return `${wName(a.byWorkerId, a.byName)} dejó «${a.text}» para el ${fmtShort(a.toDate)}${a.note ? `: “${a.note}”` : '.'}`;
+  }
   if (a.type === 'incompleto') {
     return `${wName(a.forWorkerId, a.forName)} terminó su turno con ${a.count} tarea(s) sin marcar.`;
   }
@@ -215,13 +265,7 @@ async function notifyAlert(a) {
   const msg = alertText(a);
   toast(`🔔 ${msg}`, 'warn');
   beep();
-  try {
-    if ('Notification' in window && Notification.permission === 'granted') {
-      const reg = await navigator.serviceWorker?.getRegistration();
-      if (reg) reg.showNotification('Heladería – aviso', { body: msg, tag: a.id, icon: 'icon.svg' });
-      else new Notification('Heladería – aviso', { body: msg });
-    }
-  } catch {}
+  showNotification('Heladería – aviso', msg, a.id);
 }
 
 // ───────────────────────── render ─────────────────────────
@@ -282,8 +326,8 @@ function viewHome() {
 }
 
 // ── PIN ──
-function pinPad(title, subtitle) {
-  const dots = [0, 1, 2, 3].map((i) => `<span class="dot ${i < S.ui.pin.length ? 'on' : ''}"></span>`).join('');
+function pinPad(title, subtitle, len = 4) {
+  const dots = [...Array(len).keys()].map((i) => `<span class="dot ${i < S.ui.pin.length ? 'on' : ''}"></span>`).join('');
   const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '', '0', '⌫'];
   return `
     <div class="pin">
@@ -299,9 +343,9 @@ function viewPickWorker() {
   const w = S.ui.pickWorker && S.workers.find((x) => x.id === S.ui.pickWorker);
   if (w) {
     return `${topbar('Ingresar', '<button class="link" data-act="pick-back">Volver</button>')}
-      <div class="page narrow">${pinPad(`Hola, ${esc(w.name)}`, 'Ingresa tu PIN de 4 dígitos')}</div>`;
+      <div class="page narrow">${pinPad(`Hola, ${esc(w.name)}`, 'Ingresa tu PIN', w.pinLength || 4)}</div>`;
   }
-  const active = S.workers.filter((x) => x.active !== false);
+  const active = S.workers.filter((x) => x.active !== false && !x.noPhone);
   return `${topbar('¿Quién eres?')}
     ${demoBanner()}
     <div class="page narrow">
@@ -331,16 +375,6 @@ function viewAdminLogin() {
 }
 
 // ── vista trabajador ──
-function itemRow(c, it, { canToggle, ownerId }) {
-  const by = it.done && it.doneBy && it.doneBy !== ownerId ? ` · por ${esc(wName(it.doneBy))}` : '';
-  const locked = !canToggle || (it.done && it.doneBy && it.doneBy !== S.session?.workerId);
-  return `
-    <button class="item ${it.done ? 'done' : ''}" data-act="toggle" data-cl="${c.id}" data-task="${it.id}" ${locked ? 'disabled' : ''}>
-      <span class="box">${it.done ? '✓' : ''}</span>
-      <span class="txt">${esc(it.text)}${it.done ? `<small>${fmtTime(it.doneAt)}${by}</small>` : ''}</span>
-    </button>`;
-}
-
 function groupBySection(items, render) {
   const groups = SECTIONS.map((s) => ({ s, items: items.filter((i) => i.section === s.id) })).filter((g) => g.items.length);
   const other = items.filter((i) => !SECTIONS.some((s) => s.id === i.section));
@@ -353,13 +387,47 @@ function groupBySection(items, render) {
     .join('');
 }
 
-function previousPending(mine, t) {
+// Quién hizo una tarea (y quién la marcó, si fue otra persona).
+function whoDid(it) {
+  if (!it?.done) return '';
+  const by = wName(it.doneBy);
+  return it.markedBy && it.markedBy !== it.doneBy ? `${by} (marcó ${wName(it.markedBy)})` : by;
+}
+
+// Checklists de turnos anteriores (ayer, o antes hoy y ya terminados).
+function previousShifts(mine, t) {
   return S.checklists
     .filter((c) => c.id !== mine.id)
     .filter((c) => c.date < t || (c.date === t && (c.start || '') < (mine.start || '') && (c.closedAt || (c.end && c.end <= nowHM()))))
-    .map((c) => ({ c, items: sortedItems(c).filter((i) => !i.done && i.section !== 'durante') }))
-    .filter((x) => x.items.length)
-    .sort((a, b) => (a.c.date + (a.c.start || '')).localeCompare(b.c.date + (b.c.start || '')));
+    .sort((a, b) => (a.date + (a.start || '')).localeCompare(b.date + (b.start || '')));
+}
+
+// Fila de tarea con una casilla por persona (yo + compañeras sin celular).
+function taskRow(row, cols, me) {
+  const boxes = cols.map((col) => {
+    const it = row.items[col.c.id];
+    if (!it) return '<span class="box ghost"></span>';
+    const canUndo = it.doneBy === col.id || it.doneBy === me || it.markedBy === me;
+    const locked = col.c.closedAt || (it.done && !canUndo);
+    return `<button class="box ${it.done ? 'on' : ''}" data-act="toggle" data-cl="${col.c.id}" data-task="${row.id}" data-as="${col.id}" ${locked ? 'disabled' : ''} title="${esc(col.label)}">${it.done ? '✓' : ''}</button>`;
+  }).join('');
+  const done = cols.some((col) => row.items[col.c.id]?.done);
+  const first = cols.map((col) => row.items[col.c.id]).find((it) => it?.done);
+  const mineIt = row.items[cols[0].c.id];
+  const postponed = !done && mineIt?.postponed;
+  const meta = [
+    row.time ? `⏰ ${esc(row.time)}` : '',
+    first ? `${fmtTime(first.doneAt)} · ${esc(whoDid(first))}` : '',
+    postponed ? `📌 Pasa al ${esc(fmtShort(postponed.to))}${postponed.note ? ` · ${esc(postponed.note)}` : ''}` : '',
+  ].filter(Boolean).join(' · ');
+  const more = mineIt && !mineIt.done && !postponed && !cols[0].c.closedAt
+    ? `<button class="more" data-act="item-menu" data-cl="${cols[0].c.id}" data-task="${row.id}" title="Más opciones">⋯</button>` : '';
+  return `
+    <div class="trow ${done ? 'done' : ''} ${postponed ? 'postponed' : ''}">
+      <div class="boxes">${boxes}</div>
+      <div class="txt">${esc(row.text)}${meta ? `<small>${meta}</small>` : ''}</div>
+      ${more}
+    </div>`;
 }
 
 function viewWorker() {
@@ -369,46 +437,95 @@ function viewWorker() {
   if (!w) return `${head}<div class="page narrow"><div class="empty">Cargando…</div></div>`;
   const t = today();
   useChecklists(addDays(t, -1), t);
+  useCarry();
   if (!S.checklists) return `${head}<div class="page narrow"><div class="empty">Cargando…</div></div>`;
   const mine = S.checklists.find((c) => c.date === t && c.workerId === w.id);
   if (!mine) {
     return `${head}${demoBanner()}<div class="page narrow"><div class="empty">No tienes un turno asignado para hoy<br><b>${esc(fmtDate(t))}</b>.</div></div>`;
   }
-  const items = sortedItems(mine);
-  const done = items.filter((i) => i.done).length;
+  const me = w.id;
   const closed = !!mine.closedAt;
-  const prev = previousPending(mine, t);
-  const prevCount = prev.reduce((n, x) => n + x.items.length, 0);
+  const myItems = sortedItems(mine);
+  const done = myItems.filter((i) => i.done).length;
+
+  // Columnas: yo + compañeras sin celular que tienen turno hoy.
+  const partners = S.checklists
+    .filter((c) => c.date === t && c.workerId !== me && S.workers.find((x) => x.id === c.workerId)?.noPhone)
+    .map((c) => ({ id: c.workerId, c, label: wName(c.workerId, c.workerName) }));
+  const cols = [{ id: me, c: mine, label: 'Yo' }, ...partners];
+  const rowsById = new Map();
+  for (const col of cols) {
+    for (const it of sortedItems(col.c)) {
+      const row = rowsById.get(it.id) || { id: it.id, text: it.text, section: it.section, order: it.order, time: it.time, items: {} };
+      row.items[col.c.id] = it;
+      rowsById.set(it.id, row);
+    }
+  }
+  const rows = [...rowsById.values()].map((r) => ({ ...r, done: cols.some((col) => r.items[col.c.id]?.done) }));
+  rows.sort((a, b) => sectionIdx(a.section) - sectionIdx(b.section) || (a.order || 0) - (b.order || 0));
+
+  const wd = parseYmd(t).getDay();
+  const reminders = S.tasks.filter((x) => INFO_SECTIONS.includes(x.section) && x.active !== false && (x.days || ALL_DAYS).includes(wd));
+
+  const carry = S.carry.filter((x) => x.toDate <= t);
+  const prev = previousShifts(mine, t);
+  const prevItems = prev.reduce((n, c) => n + sortedItems(c).length, 0);
+  const prevPending = prev.reduce((n, c) => n + sortedItems(c).filter((i) => !i.done && !i.postponed).length, 0);
   const prevOpen = S.ui.expanded.has('prev');
+  const notifAsk = 'Notification' in window && Notification.permission === 'default' && myItems.some((i) => i.time);
 
   return `${head}${demoBanner()}
     <div class="page narrow">
       <div class="card shift-head">
         <div><b>Turno ${esc(mine.shiftName)}</b> · ${esc(mine.start || '')}–${esc(mine.end || '')}</div>
-        <div class="muted small">${esc(fmtDate(t))}</div>
-        ${progressBar(done, items.length)}
-        <div class="small">${done} de ${items.length} tareas · ${pct(done, items.length)}%</div>
+        <div class="muted small">${esc(fmtDate(t))}${partners.length ? ` · con ${partners.map((p) => esc(p.label)).join(', ')} (sin celular)` : ''}</div>
+        ${progressBar(done, myItems.length)}
+        <div class="small">${done} de ${myItems.length} tareas · ${pct(done, myItems.length)}%</div>
         ${closed ? `<div class="chip ok">Turno terminado a las ${fmtTime(mine.closedAt)}</div>` : ''}
       </div>
 
-      <details class="card normas"><summary>📋 Normas</summary><ul>${NORMAS.map((n) => `<li>${esc(n)}</li>`).join('')}</ul></details>
+      ${notifAsk ? '<button class="btn block" data-act="notif">🔔 Activar alarmas de tareas con hora</button>' : ''}
 
-      ${prevCount ? `
+      <details class="card normas"><summary>📋 Normas</summary><ul>${NORMAS.map((n) => `<li>${esc(n)}</li>`).join('')}</ul></details>
+      ${reminders.length ? `<details class="card normas"><summary>🔁 Durante el día (recordatorios)</summary><ul>${reminders.map((r) => `<li>${esc(r.text)}</li>`).join('')}</ul></details>` : ''}
+
+      ${carry.length ? `
+        <div class="card carry">
+          <h3>📌 Pendientes que quedaron para hoy</h3>
+          ${carry.map((x) => `
+            <div class="trow">
+              <div class="boxes"><button class="box" data-act="carry-done" data-id="${x.id}" ${closed ? 'disabled' : ''}></button></div>
+              <div class="txt">${esc(x.text)}<small>Desde el ${esc(fmtShort(x.fromDate))} · ${esc(wName(x.by))}${x.note ? ` · “${esc(x.note)}”` : ''}</small></div>
+              ${closed ? '' : `<button class="more" data-act="carry-menu" data-id="${x.id}" title="Más opciones">⋯</button>`}
+            </div>`).join('')}
+        </div>` : ''}
+
+      ${prevItems ? `
         <div class="card prev">
           <button class="prev-head" data-act="expand" data-id="prev">
-            <span>⚠️ Pendientes de turnos anteriores <span class="badge">${prevCount}</span></span><span>${prevOpen ? '▲' : '▼'}</span>
+            <span>🔎 Revisar turno anterior ${prevPending ? `<span class="badge">${prevPending} sin hacer</span>` : ''}</span><span>${prevOpen ? '▲' : '▼'}</span>
           </button>
-          ${prevOpen ? `<p class="muted small">Si haces alguna de estas tareas, márcala aquí. Se avisará a administración.</p>
-            ${prev.map(({ c, items: its }) => `
+          ${prevOpen ? `<p class="muted small">Si una tarea quedó sin hacer y la hiciste tú, presiona <b>Lo hice</b>. Si quedó mal hecha (ej. el agua quedó corriendo), presiona <b>Reportar</b>. Administración recibe un aviso.</p>
+            ${prev.map((c) => `
               <div class="prev-group">
                 <div class="prev-who">${esc(wName(c.workerId, c.workerName))} · ${esc(c.shiftName)} · ${esc(fmtShort(c.date))}</div>
-                ${its.map((it) => `<button class="item" data-act="cover" data-cl="${c.id}" data-task="${it.id}"><span class="box"></span><span class="txt">${esc(it.text)}<small>${esc(sectionName(it.section))}</small></span></button>`).join('')}
+                ${sortedItems(c).map((it) => `
+                  <div class="prow ${it.done ? 'done' : ''}">
+                    <span>${it.reported ? '⚠️' : it.done ? '✅' : it.postponed ? '📌' : '⬜'}</span>
+                    <div class="txt">${esc(it.text)}<small>${it.reported ? `Reportado por ${esc(wName(it.reported.by))}${it.reported.note ? `: “${esc(it.reported.note)}”` : ''}` : it.done ? esc(whoDid(it)) : it.postponed ? `Pasa al ${esc(fmtShort(it.postponed.to))}` : 'Sin hacer'}</small></div>
+                    <div class="pbtns">
+                      ${!it.done && !it.postponed ? `<button class="btn small" data-act="cover" data-cl="${c.id}" data-task="${it.id}">Lo hice</button>` : ''}
+                      ${it.reported ? '' : `<button class="btn small danger" data-act="report-item" data-cl="${c.id}" data-task="${it.id}">Reportar</button>`}
+                    </div>
+                  </div>`).join('')}
               </div>`).join('')}` : ''}
         </div>` : ''}
 
-      ${groupBySection(items, (it) => itemRow(mine, it, { canToggle: !closed, ownerId: mine.workerId }))}
+      ${partners.length ? `<div class="cols-head"><div class="boxes">${cols.map((c) => `<span>${esc(c.label)}</span>`).join('')}</div><div class="small muted">Marca en la columna de quien hizo la tarea</div></div>` : ''}
+      ${groupBySection(rows, (r) => taskRow(r, cols, me))}
 
-      ${closed ? '' : `<button class="btn block primary" data-act="finish" data-cl="${mine.id}">Terminar turno</button>`}
+      ${closed ? '' : `<button class="btn block primary" data-act="finish" data-cl="${mine.id}">Terminar mi turno</button>`}
+      ${partners.filter((p) => !p.c.closedAt).map((p) => `<button class="btn block" data-act="finish" data-cl="${p.c.id}">Terminar turno de ${esc(p.label)}</button>`).join('')}
     </div>`;
 }
 
@@ -437,9 +554,27 @@ function statusOf(c) {
   return ['Sin iniciar', ''];
 }
 
+// Cuántas tareas distintas hizo cada persona (las compartidas cuentan una vez).
+function tasksDoneBy(cls) {
+  const sets = {};
+  for (const c of cls) for (const it of sortedItems(c)) if (it.done && it.doneBy) (sets[it.doneBy] ||= new Set()).add(`${c.date}|${it.id}`);
+  return Object.entries(sets).map(([id, set]) => ({ id, n: set.size })).sort((a, b) => b.n - a.n);
+}
+
+function itemDetail(it) {
+  const icon = it.reported ? '⚠️' : it.done ? '✅' : it.postponed ? '📌' : '⬜';
+  const meta = [
+    it.done ? `${fmtTime(it.doneAt)} · ${whoDid(it)}` : '',
+    it.postponed && !it.done ? `pasa al ${fmtShort(it.postponed.to)}${it.postponed.note ? ` · ${it.postponed.note}` : ''}` : '',
+    it.reported ? `reportada por ${wName(it.reported.by)}${it.reported.note ? `: “${it.reported.note}”` : ''}` : '',
+  ].filter(Boolean).join(' · ');
+  return `<div class="drow ${it.done ? 'done' : ''}"><span>${icon}</span><span>${esc(it.text)}</span><span class="muted small">${esc(meta)}</span></div>`;
+}
+
 function adminLive() {
   const t = today();
   useChecklists(addDays(t, -1), t);
+  useCarry();
   const unread = S.alerts.filter((a) => !a.read);
   const shown = S.ui.showAllAlerts ? S.alerts.slice(0, 50) : unread;
   const alertsHtml = `
@@ -466,11 +601,16 @@ function adminLive() {
         </button>
         ${progressBar(done, items.length)}
         <div class="row-between small"><span>${done}/${items.length} · ${pct(done, items.length)}%</span><span class="muted">${c.lastActivity ? `Última marca ${fmtTime(c.lastActivity)}` : ''}</span></div>
-        ${open ? `<div class="detail">${groupBySection(items, (it) => `<div class="drow ${it.done ? 'done' : ''}"><span>${it.done ? '✅' : '⬜'}</span><span>${esc(it.text)}</span><span class="muted small">${it.done ? fmtTime(it.doneAt) + (it.doneBy && it.doneBy !== c.workerId ? ' · ' + esc(wName(it.doneBy)) : '') : ''}</span></div>`)}
+        ${open ? `<div class="detail">${groupBySection(items, itemDetail)}
           ${c.closedAt ? `<button class="btn small" data-act="reopen" data-cl="${c.id}">Reabrir turno</button>` : ''}</div>` : ''}
       </div>`;
   });
-  return `${alertsHtml}<h2>Hoy · ${esc(fmtDate(t))}</h2>${cards.length ? cards.join('') : '<div class="empty">No hay turnos asignados hoy. Asígnalos en <a href="#/admin/turnos">Turnos</a>.</div>'}`;
+  const reparto = tasksDoneBy(todays);
+  const carry = S.carry;
+  return `${alertsHtml}<h2>Hoy · ${esc(fmtDate(t))}</h2>
+    ${reparto.length ? `<div class="card"><h3>👥 Quién hizo las tareas hoy</h3>${reparto.map((r) => `<div class="dbar"><span class="dlabel">${esc(wName(r.id))}</span>${progressBar(r.n, reparto[0].n)}<span class="dval">${r.n}</span></div>`).join('')}</div>` : ''}
+    ${cards.length ? cards.join('') : '<div class="empty">No hay turnos asignados hoy. Asígnalos en <a href="#/admin/turnos">Turnos</a>.</div>'}
+    ${carry.length ? `<h3>📌 Pendientes postergados</h3><div class="card">${carry.map((x) => `<div class="drow"><span>📌</span><span>${esc(x.text)}</span><span class="muted small">del ${esc(fmtShort(x.fromDate))} → ${esc(fmtShort(x.toDate))} · ${esc(wName(x.by))}${x.note ? ` · “${esc(x.note)}”` : ''}</span></div>`).join('')}</div>` : ''}`;
 }
 
 function adminShifts() {
@@ -518,10 +658,11 @@ function adminTasks() {
     const ts = S.tasks.filter((t) => t.section === s.id);
     return `
       <h3>${esc(s.name)} <span class="count">${ts.length}</span></h3>
+      ${s.info ? '<p class="small muted">Recordatorios: se muestran como lista desplegable y no se marcan.</p>' : ''}
       <div class="card list">
         ${ts.map((t) => {
           const days = t.days && t.days.length < 7 ? t.days.map((d) => DAY_NAMES[d]).join(', ') : '';
-          return `<button class="list-row ${t.active === false ? 'inactive' : ''}" data-act="edit-task" data-id="${t.id}"><div>${esc(t.text)}${days ? `<div class="small muted">Solo: ${esc(days)}</div>` : ''}${isShared(t) ? '<div class="small muted">👥 Compartida</div>' : ''}${t.active === false ? '<div class="small muted">Desactivada</div>' : ''}</div><span>✎</span></button>`;
+          return `<button class="list-row ${t.active === false ? 'inactive' : ''}" data-act="edit-task" data-id="${t.id}"><div>${esc(t.text)}${days ? `<div class="small muted">Solo: ${esc(days)}</div>` : ''}${t.time ? `<div class="small muted">⏰ ${esc(t.time)} (alarma 15 min antes y a la hora)</div>` : ''}${!s.info && isShared(t) ? '<div class="small muted">👥 Compartida</div>' : ''}${t.active === false ? '<div class="small muted">Desactivada</div>' : ''}</div><span>✎</span></button>`;
         }).join('')}
         <button class="list-row add" data-act="edit-task" data-section="${s.id}">＋ Agregar tarea</button>
       </div>`;
@@ -544,7 +685,7 @@ function adminTeam() {
     </div>
     <h2>Equipo</h2>
     <div class="card list">
-      ${S.workers.map((w) => `<button class="list-row ${w.active === false ? 'inactive' : ''}" data-act="edit-worker" data-id="${w.id}"><div><b>${esc(w.name)}</b><div class="small muted">PIN ${esc(S.pins[w.id] ?? '····')}${w.active === false ? ' · Inactivo' : ''}</div></div><span>✎</span></button>`).join('')}
+      ${S.workers.map((w) => `<button class="list-row ${w.active === false ? 'inactive' : ''}" data-act="edit-worker" data-id="${w.id}"><div><b>${esc(w.name)}</b><div class="small muted">PIN ${esc(S.pins[w.id] ?? '··')}${w.noPhone ? ' · 📵 Sin celular' : ''}${w.active === false ? ' · Inactivo' : ''}</div></div><span>✎</span></button>`).join('')}
       <button class="list-row add" data-act="edit-worker">＋ Agregar persona</button>
     </div>`;
 }
@@ -605,20 +746,30 @@ async function loadReport(preset, from, to) {
 function computeReport(cls) {
   const t = today();
   const per = {};
-  const ensure = (id, name) => per[id] || (per[id] = { id, name, shifts: 0, total: 0, done: 0, coveredByOthers: 0, missed: 0, pending: 0, coveredOthers: 0 });
+  const ensure = (id, name) => per[id] || (per[id] = { id, name, shifts: 0, total: 0, done: 0, coveredByOthers: 0, missed: 0, pending: 0, coveredOthers: 0, reported: 0, postponed: 0, did: 0 });
   const byDay = {};
   const missedTasks = {};
   const missedList = [];
   const covers = [];
+  const reports = [];
+  const postponedList = [];
   for (const c of cls) {
     const s = ensure(c.workerId, c.workerName);
     s.shifts++;
     const day = byDay[c.date] || (byDay[c.date] = { total: 0, done: 0 });
     const open = c.date === t && !c.closedAt;
     for (const it of sortedItems(c)) {
+      if (it.postponed && !it.done) {
+        s.postponed++;
+        postponedList.push({ date: c.date, workerId: c.workerId, workerName: c.workerName, text: it.text, ...it.postponed });
+        continue;
+      }
       s.total++;
       day.total++;
-      if (it.done) {
+      if (it.reported) {
+        s.reported++;
+        reports.push({ date: c.date, workerId: c.workerId, workerName: c.workerName, shift: c.shiftName, text: it.text, checkedBy: it.done ? it.doneBy : null, ...it.reported });
+      } else if (it.done) {
         if (it.doneBy && it.doneBy !== c.workerId && (it.covered || !it.shared)) {
           s.coveredByOthers++;
           ensure(it.doneBy).coveredOthers++;
@@ -637,7 +788,9 @@ function computeReport(cls) {
     }
   }
   const total = Object.values(per).reduce((a, s) => ({ total: a.total + s.total, done: a.done + s.done, missed: a.missed + s.missed, covered: a.covered + s.coveredByOthers }), { total: 0, done: 0, missed: 0, covered: 0 });
-  return { cls, per: Object.values(per).filter((s) => s.shifts || s.coveredOthers), byDay, missedTasks, missedList, covers, total };
+  for (const { id, n } of tasksDoneBy(cls)) ensure(id).did = n;
+  total.reported = reports.length;
+  return { cls, per: Object.values(per).filter((s) => s.shifts || s.coveredOthers), byDay, missedTasks, missedList, covers, reports, postponedList, total };
 }
 
 function adminReports() {
@@ -655,7 +808,7 @@ function adminReports() {
   const rows = d.per.sort((a, b) => pct(b.done, b.total) - pct(a.done, a.total)).map((s) => `
     <tr><td><b>${esc(wName(s.id, s.name))}</b></td><td>${s.shifts}</td>
     <td class="pctcell">${progressBar(s.done, s.total)}<span>${pct(s.done, s.total)}%</span></td>
-    <td class="${s.missed ? 'bad-t' : ''}">${s.missed}</td><td>${s.coveredByOthers}</td><td>${s.coveredOthers}</td>${s.pending ? `<td class="muted">${s.pending} en curso</td>` : '<td></td>'}</tr>`).join('');
+    <td class="${s.missed ? 'bad-t' : ''}">${s.missed}</td><td class="${s.reported ? 'bad-t' : ''}">${s.reported}</td><td>${s.postponed}</td><td><b>${s.did}</b></td><td>${s.coveredByOthers}</td><td>${s.coveredOthers}</td>${s.pending ? `<td class="muted">${s.pending} en curso</td>` : '<td></td>'}</tr>`).join('');
 
   const dayBars = Object.entries(d.byDay).sort().map(([date, v]) => `
     <div class="dbar"><span class="dlabel">${esc(fmtShort(date))}</span>${progressBar(v.done, v.total)}<span class="dval">${pct(v.done, v.total)}%</span></div>`).join('');
@@ -670,12 +823,14 @@ function adminReports() {
       <div class="stat"><div class="sv">${pct(d.total.done, d.total.total)}%</div><div class="sl">Cumplimiento</div></div>
       <div class="stat"><div class="sv ${d.total.missed ? 'bad-t' : ''}">${d.total.missed}</div><div class="sl">No hechas</div></div>
       <div class="stat"><div class="sv">${d.total.covered}</div><div class="sl">Cubiertas por otro</div></div>
+      <div class="stat"><div class="sv ${d.total.reported ? 'bad-t' : ''}">${d.total.reported}</div><div class="sl">Reportadas</div></div>
     </div>
 
     <h3>Por persona</h3>
     <div class="table-wrap card"><table class="rep">
-      <thead><tr><th>Persona</th><th>Turnos</th><th>Cumplimiento</th><th>No hechas</th><th>Se las cubrieron</th><th>Cubrió a otros</th><th></th></tr></thead>
+      <thead><tr><th>Persona</th><th>Turnos</th><th>Cumplimiento</th><th>No hechas</th><th>Reportadas</th><th>Postergadas</th><th>Tareas que hizo</th><th>Se las cubrieron</th><th>Cubrió a otros</th><th></th></tr></thead>
       <tbody>${rows}</tbody></table></div>
+    <p class="small muted">“Tareas que hizo” cuenta cada tarea una sola vez aunque sea compartida: sirve para ver quién trabajó más en un turno compartido.</p>
 
     <h3>Cumplimiento por día</h3>
     <div class="card">${dayBars}</div>
@@ -684,6 +839,10 @@ function adminReports() {
 
     ${d.missedList.length ? `<h3>Detalle de tareas no hechas</h3>
       ${Object.entries(missedByDate).sort().reverse().map(([date, ms]) => `<div class="card"><b>${esc(fmtDate(date))}</b>${ms.map((m) => `<div class="drow"><span>❌</span><span>${esc(m.text)}</span><span class="muted small">${esc(wName(m.workerId, m.workerName))} · ${esc(m.shift)}</span></div>`).join('')}</div>`).join('')}` : ''}
+
+    ${d.reports.length ? `<h3>⚠️ Reportadas por el turno siguiente</h3><div class="card">${d.reports.map((r) => `<div class="drow"><span>⚠️</span><span>${esc(r.text)}${r.note ? ` — “${esc(r.note)}”` : ''}</span><span class="muted small">${esc(fmtShort(r.date))} · turno de ${esc(wName(r.workerId, r.workerName))}${r.checkedBy ? ` · marcada por ${esc(wName(r.checkedBy))}` : ''} · reportó ${esc(wName(r.by))}</span></div>`).join('')}</div>` : ''}
+
+    ${d.postponedList.length ? `<h3>📌 Postergadas</h3><div class="card">${d.postponedList.map((r) => `<div class="drow"><span>📌</span><span>${esc(r.text)}${r.note ? ` — “${esc(r.note)}”` : ''}</span><span class="muted small">${esc(fmtShort(r.date))} → ${esc(fmtShort(r.to))} · ${esc(wName(r.by))}</span></div>`).join('')}</div>` : ''}
 
     ${d.covers.length ? `<h3>Tareas cubiertas por otra persona</h3><div class="card">${d.covers.map((c) => `<div class="drow"><span>🔁</span><span>${esc(c.text)}</span><span class="muted small">de ${esc(wName(c.owner, c.ownerName))} → hecha por ${esc(wName(c.by))} · ${esc(fmtShort(c.date))}</span></div>`).join('')}</div>` : ''}
 
@@ -725,10 +884,11 @@ function closeModal() {
 
 function editWorker(id) {
   const w = S.workers.find((x) => x.id === id) || { name: '', active: true };
-  const curPin = id ? S.pins[id] ?? '' : String(Math.floor(1000 + Math.random() * 9000));
+  const curPin = id ? S.pins[id] ?? '' : String(Math.floor(10 + Math.random() * 90));
   openModal(id ? 'Editar persona' : 'Nueva persona', `
     <label>Nombre<input name="name" required maxlength="40" value="${esc(w.name)}"></label>
-    <label>PIN (4 dígitos)<input name="pin" required inputmode="numeric" pattern="[0-9]{4}" maxlength="4" value="${esc(curPin)}"></label>
+    <label>PIN (2 a 6 dígitos)<input name="pin" required inputmode="numeric" pattern="[0-9]{2,6}" maxlength="6" value="${esc(curPin)}"></label>
+    <label class="check"><input type="checkbox" name="noPhone" ${w.noPhone ? 'checked' : ''}> Sin celular: sus compañeros marcan sus tareas en una columna extra</label>
     <label class="check"><input type="checkbox" name="active" ${w.active !== false ? 'checked' : ''}> Activo</label>`, {
     async onSubmit(f) {
       const name = f.get('name').trim();
@@ -736,7 +896,7 @@ function editWorker(id) {
       if (S.workers.some((x) => x.id !== id && x.active !== false && String(S.pins[x.id]) === pin)) return toast('Ese PIN ya lo usa otra persona', 'err');
       const wid = id || uid();
       await store.set('workerPins', wid, { pin });
-      await store.set('workers', wid, { name, active: f.get('active') === 'on' });
+      await store.set('workers', wid, { name, pinLength: pin.length, noPhone: f.get('noPhone') === 'on', active: f.get('active') === 'on' });
       closeModal();
     },
     onDelete: id && (async () => {
@@ -778,6 +938,8 @@ function editTask(id, section) {
     <fieldset><legend>Días</legend><div class="days">
     ${[1, 2, 3, 4, 5, 6, 0].map((d) => `<label class="day"><input type="checkbox" name="days" value="${d}" ${days.includes(d) ? 'checked' : ''}><span>${DAY_SHORT[d]}</span></label>`).join('')}
     </div></fieldset>
+    <label>Hora con alarma (opcional)<input type="time" name="time" value="${esc(t.time || '')}"></label>
+    <p class="small muted">Si tiene hora, la tarea va a quien esté en turno a esa hora y suena una alarma 15 min antes y a la hora.</p>
     <label class="check"><input type="checkbox" name="shared" ${isShared(t) ? 'checked' : ''}> 👥 Compartida: si varias personas coinciden ese día, cuando una la marca queda lista para todas</label>
     <label class="check"><input type="checkbox" name="active" ${t.active !== false ? 'checked' : ''}> Activa</label>`, {
     async onSubmit(f) {
@@ -785,7 +947,7 @@ function editTask(id, section) {
       if (!d.length) return toast('Elige al menos un día', 'err');
       const sec = f.get('section');
       const order = id && t.section === sec ? t.order : Math.max(0, ...S.tasks.filter((x) => x.section === sec).map((x) => x.order || 0)) + 1;
-      await store.set('tasks', id || uid(), { text: f.get('text').trim(), section: sec, days: d, order, shared: f.get('shared') === 'on', active: f.get('active') === 'on' });
+      await store.set('tasks', id || uid(), { text: f.get('text').trim(), section: sec, days: d, order, time: f.get('time') || null, shared: f.get('shared') === 'on', active: f.get('active') === 'on' });
       closeModal();
     },
     onDelete: id && (async () => {
@@ -822,11 +984,18 @@ function buildItems(st, date, prev, selfId) {
   const wd = parseYmd(date).getDay();
   const out = {};
   S.tasks
-    .filter((t) => t.active !== false && (st.sections || []).includes(t.section) && (t.days || ALL_DAYS).includes(wd))
+    .filter((t) => t.active !== false && !INFO_SECTIONS.includes(t.section) && (t.days || ALL_DAYS).includes(wd))
+    // Tareas con hora: van en los turnos que están trabajando a esa hora.
+    .filter((t) => (t.time ? (st.start || '') <= t.time && t.time < (st.end || '') : (st.sections || []).includes(t.section)))
     .forEach((t) => {
       const shared = isShared(t);
       const p = prev?.[t.id]?.done ? prev[t.id] : shared ? sharedDoneElsewhere(date, t.id, selfId) : null;
-      out[t.id] = { text: t.text, section: t.section, order: t.order || 0, shared, done: !!p?.done, doneAt: p?.doneAt || null, doneBy: p?.doneBy || null, covered: !!p?.covered };
+      const prevIt = prev?.[t.id];
+      out[t.id] = {
+        text: t.text, section: t.section, order: t.order || 0, time: t.time || null, shared,
+        done: !!p?.done, doneAt: p?.doneAt || null, doneBy: p?.doneBy || null, markedBy: p?.markedBy || null, covered: !!p?.covered,
+        postponed: prevIt?.postponed || null, reported: prevIt?.reported || null,
+      };
     });
   // Conserva tareas ya marcadas aunque hayan sido quitadas del turno.
   Object.entries(prev || {}).forEach(([k, p]) => { if (p.done && !out[k]) out[k] = p; });
@@ -887,23 +1056,31 @@ async function workerLogin(w, pin) {
   render();
 }
 
-function markPatch(tid, done, by, now, covered = false) {
+function markPatch(tid, done, by, now, covered = false, marker = by) {
   return {
     [`items.${tid}.done`]: done,
     [`items.${tid}.doneAt`]: done ? now : null,
     [`items.${tid}.doneBy`]: done ? by : null,
+    [`items.${tid}.markedBy`]: done ? marker : null,
     [`items.${tid}.covered`]: done && covered,
   };
 }
 
+// Aplica un cambio a la misma tarea compartida en los demás turnos del mismo día.
+async function applyShared(c, tid, patch) {
+  for (const o of (S.checklists || []).filter((o) => o.id !== c.id && o.date === c.date && o.items?.[tid]?.shared)) {
+    await store.update('checklists', o.id, patch);
+  }
+}
+
 // Tarea compartida: replica la marca en los turnos del mismo día que tienen esa tarea.
-async function syncShared(c, tid, done, by, now, covered = false) {
+async function syncShared(c, tid, done, by, now, covered = false, marker = by) {
   const others = (S.checklists || []).filter((o) => o.id !== c.id && o.date === c.date && o.items?.[tid]?.shared);
   for (const o of others) {
     const oi = o.items[tid];
     // Al desmarcar, solo se quita en los turnos donde la marca era de esta misma persona.
     if (done ? oi.done : !oi.done || oi.doneBy !== by) continue;
-    await store.update('checklists', o.id, markPatch(tid, done, by, now, covered));
+    await store.update('checklists', o.id, markPatch(tid, done, by, now, covered, marker));
   }
 }
 
@@ -911,8 +1088,10 @@ const ACTIONS = {
   pin(el) {
     const k = el.dataset.k;
     S.ui.pinError = false;
-    S.ui.pin = k === '⌫' ? S.ui.pin.slice(0, -1) : (S.ui.pin + k).slice(0, 4);
-    if (S.ui.pin.length === 4) {
+    const w = S.route.path === 'admin' ? null : S.workers.find((x) => x.id === S.ui.pickWorker);
+    const len = w ? w.pinLength || 4 : 4;
+    S.ui.pin = k === '⌫' ? S.ui.pin.slice(0, -1) : (S.ui.pin + k).slice(0, len);
+    if (S.ui.pin.length === len) {
       const pin = S.ui.pin;
       S.ui.pin = '';
       if (S.route.path === 'admin') {
@@ -921,7 +1100,6 @@ const ACTIONS = {
           ensureAlerts();
         } else S.ui.pinError = true;
       } else {
-        const w = S.workers.find((x) => x.id === S.ui.pickWorker);
         return workerLogin(w, pin);
       }
     }
@@ -969,14 +1147,18 @@ const ACTIONS = {
     if (!c || c.closedAt) return;
     const it = c.items[tid];
     const me = S.session.workerId;
+    const as = el.dataset.as || me;
     const done = !it.done;
     const now = Date.now();
     await store.update('checklists', c.id, {
-      ...markPatch(tid, done, me, now),
+      ...markPatch(tid, done, as, now, false, me),
+      [`items.${tid}.postponed`]: null,
       lastActivity: now,
       startedAt: c.startedAt || now,
     });
-    if (it.shared) await syncShared(c, tid, done, me, now);
+    if (it.shared) await syncShared(c, tid, done, as, now, false, me);
+    // Si estaba postergada y al final se hizo, se cierra el pendiente.
+    if (done && it.postponed) await store.update('carry', `${c.date}_${tid}`, { done: true, doneBy: as, doneAt: now, markedBy: me }).catch(() => {});
   },
   async cover(el) {
     const c = findChecklist(el.dataset.cl);
@@ -988,7 +1170,7 @@ const ACTIONS = {
     if (!confirm(`¿Confirmas que hiciste «${it.text}», que quedó pendiente del turno de ${owner}?`)) return;
     const me = S.session.workerId;
     const now = Date.now();
-    await store.update('checklists', c.id, markPatch(tid, true, me, now, true));
+    await store.update('checklists', c.id, { ...markPatch(tid, true, me, now, true), [`items.${tid}.postponed`]: null });
     if (it.shared) await syncShared(c, tid, true, me, now, true);
     await store.set('alerts', uid(), {
       type: 'cubierta', at: now, date: c.date, read: false, text: it.text, taskId: tid, checklistId: c.id,
@@ -999,18 +1181,94 @@ const ACTIONS = {
   async finish(el) {
     const c = findChecklist(el.dataset.cl);
     if (!c) return;
-    const pending = sortedItems(c).filter((i) => !i.done);
-    if (pending.length && !confirm(`Te quedan ${pending.length} tarea(s) sin marcar. ¿Terminar el turno igual? Se avisará a administración.`)) return;
-    if (!pending.length && !confirm('¿Terminar el turno?')) return;
+    const pending = sortedItems(c).filter((i) => !i.done && !i.postponed);
+    const whose = c.workerId === S.session.workerId ? 'el turno' : `el turno de ${wName(c.workerId)}`;
+    if (pending.length && !confirm(`Quedan ${pending.length} tarea(s) sin marcar. ¿Terminar ${whose} igual? Se avisará a administración.`)) return;
+    if (!pending.length && !confirm(`¿Terminar ${whose}?`)) return;
     const now = Date.now();
     await store.update('checklists', c.id, { closedAt: now, lastActivity: now, startedAt: c.startedAt || now });
     if (pending.length) {
       await store.set('alerts', uid(), {
-        type: 'incompleto', at: now, date: c.date, read: false, checklistId: c.id, count: pending.length,
+        type: 'incompleto', at: now, date: c.date, read: false, checklistId: c.id, count: pending.length, byWorkerId: S.session.workerId,
         forWorkerId: c.workerId, forName: wName(c.workerId, c.workerName), tasks: pending.map((p) => p.text),
       });
     }
     toast('¡Turno terminado! Gracias 🍦');
+  },
+  'item-menu'(el) {
+    const c = findChecklist(el.dataset.cl);
+    const it = c?.items[el.dataset.task];
+    if (!it) return;
+    const tomorrow = addDays(c.date, 1);
+    openModal('Dejar para otro día', `
+      <p>${esc(it.text)}</p>
+      <p class="small muted">Si no alcanzaste a hacerla (o la hiciste a medias), déjala pendiente: aparecerá a quien tenga turno ese día.</p>
+      <label>Para el día<input type="date" name="to" required min="${tomorrow}" value="${tomorrow}"></label>
+      <label>Nota (opcional)<textarea name="note" rows="2" maxlength="200" placeholder="Ej: se limpió 1 de los 3 refris"></textarea></label>`, {
+      submitLabel: 'Dejar pendiente',
+      async onSubmit(f) {
+        const me = S.session.workerId;
+        const now = Date.now();
+        const to = f.get('to');
+        const note = f.get('note').trim();
+        const postponed = { to, by: me, at: now, note };
+        await store.update('checklists', c.id, { [`items.${el.dataset.task}.postponed`]: postponed, lastActivity: now });
+        if (it.shared) await applyShared(c, el.dataset.task, { [`items.${el.dataset.task}.postponed`]: postponed });
+        await store.set('carry', `${c.date}_${el.dataset.task}`, {
+          taskId: el.dataset.task, text: it.text, section: it.section, fromDate: c.date, fromChecklistId: c.id,
+          toDate: to, note, by: me, at: now, done: false, doneBy: null, doneAt: null, markedBy: null,
+        });
+        await store.set('alerts', uid(), { type: 'postergada', at: now, date: c.date, read: false, text: it.text, toDate: to, note, byWorkerId: me, byName: wName(me) });
+        closeModal();
+        toast('Quedó pendiente para el ' + fmtShort(to));
+      },
+    });
+  },
+  async 'carry-done'(el) {
+    const x = S.carry.find((y) => y.id === el.dataset.id);
+    if (!x || !confirm(`¿Marcar como hecha «${x.text}»?`)) return;
+    const me = S.session.workerId;
+    await store.update('carry', x.id, { done: true, doneBy: me, doneAt: Date.now(), markedBy: me });
+    toast('¡Listo!');
+  },
+  'carry-menu'(el) {
+    const x = S.carry.find((y) => y.id === el.dataset.id);
+    if (!x) return;
+    const tomorrow = addDays(today(), 1);
+    openModal('Volver a dejar pendiente', `
+      <p>${esc(x.text)}</p>
+      <label>Para el día<input type="date" name="to" required min="${tomorrow}" value="${tomorrow}"></label>
+      <label>Nota (opcional)<textarea name="note" rows="2" maxlength="200">${esc(x.note || '')}</textarea></label>`, {
+      submitLabel: 'Dejar pendiente',
+      async onSubmit(f) {
+        await store.update('carry', x.id, { toDate: f.get('to'), note: f.get('note').trim() });
+        closeModal();
+      },
+    });
+  },
+  'report-item'(el) {
+    const c = findChecklist(el.dataset.cl);
+    const tid = el.dataset.task;
+    const it = c?.items[tid];
+    if (!it) return;
+    openModal('Reportar tarea', `
+      <p><b>${esc(it.text)}</b><br><span class="small muted">Turno de ${esc(wName(c.workerId, c.workerName))} · ${esc(fmtShort(c.date))}${it.done ? ` · marcada por ${esc(whoDid(it))}` : ''}</span></p>
+      <label>¿Qué encontraste?<textarea name="note" rows="3" maxlength="300" placeholder="Ej: el agua quedó corriendo / no hicieron potes con las bachas"></textarea></label>`, {
+      submitLabel: 'Reportar',
+      async onSubmit(f) {
+        const me = S.session.workerId;
+        const now = Date.now();
+        const reported = { by: me, at: now, note: f.get('note').trim() };
+        await store.update('checklists', c.id, { [`items.${tid}.reported`]: reported });
+        if (it.shared) await applyShared(c, tid, { [`items.${tid}.reported`]: reported });
+        await store.set('alerts', uid(), {
+          type: 'reporte', at: now, date: c.date, read: false, text: it.text, taskId: tid, checklistId: c.id, note: reported.note,
+          byWorkerId: me, byName: wName(me), forWorkerId: c.workerId, forName: wName(c.workerId, c.workerName), checkedBy: it.done ? it.doneBy : null,
+        });
+        closeModal();
+        toast('Reporte enviado a administración');
+      },
+    });
   },
   async reopen(el) {
     if (!confirm('¿Reabrir este turno para que se puedan seguir marcando tareas?')) return;
@@ -1084,11 +1342,11 @@ const ACTIONS = {
     const d = S.ui.report?.data;
     if (!d?.cls) return;
     const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-    const rows = [['Fecha', 'Persona', 'Turno', 'Grupo', 'Tarea', 'Estado', 'Hora', 'Hecha por']];
+    const rows = [['Fecha', 'Persona', 'Turno', 'Grupo', 'Tarea', 'Estado', 'Hora', 'Hecha por', 'Marcada por', 'Nota']];
     for (const c of d.cls.sort((a, b) => a.date.localeCompare(b.date))) {
       for (const it of sortedItems(c)) {
-        const estado = it.done ? (it.doneBy && it.doneBy !== c.workerId ? 'Cubierta por otro' : 'Hecha') : c.date === today() && !c.closedAt ? 'Pendiente' : 'No hecha';
-        rows.push([c.date, wName(c.workerId, c.workerName), c.shiftName, sectionName(it.section), it.text, estado, fmtTime(it.doneAt), it.doneBy ? wName(it.doneBy) : '']);
+        const estado = it.reported ? 'Reportada' : it.done ? (it.covered ? 'Cubierta por otro' : 'Hecha') : it.postponed ? 'Postergada' : c.date === today() && !c.closedAt ? 'Pendiente' : 'No hecha';
+        rows.push([c.date, wName(c.workerId, c.workerName), c.shiftName, sectionName(it.section), it.text, estado, fmtTime(it.doneAt), it.doneBy ? wName(it.doneBy) : '', it.markedBy && it.markedBy !== it.doneBy ? wName(it.markedBy) : '', it.reported?.note || it.postponed?.note || '']);
       }
     }
     downloadFile(`reporte-${S.ui.report.from}_${S.ui.report.to}.csv`, '﻿' + rows.map((r) => r.map(q).join(';')).join('\n'), 'text/csv');

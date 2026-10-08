@@ -1,12 +1,14 @@
 // Datos iniciales tomados del documento "Tareas Heladería".
 // Todo se puede editar después desde Administración → Tareas / Turnos.
 
+// info: true → son recordatorios (se muestran desplegables, no se marcan).
 export const SECTIONS = [
   { id: 'apertura', name: 'Apertura' },
-  { id: 'durante', name: 'Durante el turno' },
-  { id: 'especial', name: 'Tarea especial del día' },
+  { id: 'durante', name: 'Durante el día', info: true },
+  { id: 'especial', name: 'Tareas especiales del día' },
   { id: 'cierre', name: 'Cierre' },
 ];
+export const INFO_SECTIONS = SECTIONS.filter((s) => s.info).map((s) => s.id);
 
 export const DAY_NAMES = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
 export const DAY_SHORT = ['D', 'L', 'M', 'X', 'J', 'V', 'S'];
@@ -32,6 +34,7 @@ const APERTURA = [
   'Reposición de bebidas y aguas.',
   'Reposición de pastelera y solicitar stock de ser necesario.',
   'Barrer y recoger hojas del antejardín y calle.',
+  'Recoger basura, papeles y servilletas botados en el patio y en la calle frente a la heladería.',
   'Reposición de helados de la barquillera y potes de medio si lo amerita, además del listado para UberEats.',
   'Limpiar la chocolatera.',
   'Sólo en la mañana: tener la vainilla en barquillera (devolverla al terminar el turno).',
@@ -51,6 +54,7 @@ const DURANTE = [
   'Recoger y limpiar mesas (y sillas si están chorreadas).',
   'Traspasar helados al refri del punto de venta cuando llegue una segunda persona.',
   'Mantener limpieza del baño de clientes.',
+  'Recoger basura, papeles y servilletas botados en el patio y en la calle frente a la heladería.',
 ];
 
 const CIERRE = [
@@ -84,6 +88,7 @@ const ESPECIAL = [
   { text: 'Limpieza profunda de la baldosa de la entrada (echar cloro en la mañana).', days: [3] },
   { text: 'Descongelar refrigerador y limpiarlo.', days: [4] },
   { text: 'Limpieza del baño de personal.', days: [5] },
+  { text: 'Sacar la basura antes de que pase el camión recolector.', days: [2, 4, 6], time: '18:00' },
 ];
 
 export function defaultTasks() {
@@ -96,6 +101,7 @@ export function defaultTasks() {
         text: item.text,
         section,
         days: item.days,
+        ...(item.time ? { time: item.time } : {}),
         order: i + 1,
         active: true,
       });
