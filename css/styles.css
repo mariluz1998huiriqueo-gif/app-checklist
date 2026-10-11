@@ -248,3 +248,6 @@ table { border-collapse: collapse; width: 100%; }
 .prow.done .txt { color: var(--muted); }
 .pbtns { grid-column: 2; display: flex; gap: 6px; flex-wrap: wrap; }
 .pbtns .btn.small { padding: 5px 10px; font-size: 0.82rem; }
+.week-nav { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; width: 100%; margin: 8px 0; }
+.week-nav .btn { padding: 10px 6px; font-size: 0.9rem; }
+.week-nav .btn:disabled { opacity: 0.5; cursor: default; }

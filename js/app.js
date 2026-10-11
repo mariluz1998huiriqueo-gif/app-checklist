@@ -636,12 +636,13 @@ function adminShifts() {
   return `
     <div class="row-between wrap">
       <h2>Semana del ${esc(fmtShort(ws))}</h2>
-      <div class="btn-row">
-        <button class="btn small" data-act="week" data-n="-7">‹</button>
-        <button class="btn small" data-act="week" data-n="0">Esta semana</button>
-        <button class="btn small" data-act="week" data-n="7">›</button>
+      <div class="week-nav">
+        <button class="btn" data-act="week" data-n="-7">‹ Anterior</button>
+        <button class="btn" data-act="week" data-n="0" ${ws === weekStartOf(today()) ? 'disabled' : ''}>Esta semana</button>
+        <button class="btn primary" data-act="week" data-n="7">Siguiente ›</button>
       </div>
     </div>
+    <p class="small"><b>${ws === weekStartOf(today()) ? 'Esta semana' : ws > today() ? 'Semana próxima' : 'Semana pasada'}</b> · del ${esc(fmtShort(ws))} al ${esc(fmtShort(days[6]))}. <span class="muted">En el celular, desliza la tabla hacia el lado para ver todos los días.</span></p>
     <p class="muted small">Elige el turno de cada persona por día. Su checklist se crea automáticamente con las tareas que correspondan al turno y al día.</p>
     ${grid}
     <button class="btn small" data-act="copy-week">Copiar turnos de la semana anterior</button>
