@@ -25,6 +25,12 @@ App web para el celular: cada trabajador ve y marca las tareas de **su turno**, 
 
 Administración entra con su cuenta de Google (en modo demo, con el PIN 1234).
 
+**🛒 App de Compras** (link aparte: `…/app-checklist/compras/`)
+- **Administración** (misma cuenta de Google) arma la lista eligiendo productos de un catálogo por categorías (Alimentos, Limpieza, Desechables, Otros). Se pueden crear productos y categorías nuevas en cualquier momento. Cada producto en la lista puede llevar cantidad, una marca de urgente y una nota.
+- **Quien compra** entra con su PIN y solo ve la lista de compras. Marca lo comprado; si algo no se pudo comprar, deja un comentario y administración recibe un aviso. También puede enviar mensajes y avisar “Terminé de comprar”.
+- **El equipo** no tiene acceso a Compras. Solo tiene en su checklist el botón **“⚠️ Falta algo”**, que le llega a administración; ella decide si lo agrega a la lista.
+- **Historial** de lo comprado y lo que no se pudo comprar (últimos 60 días).
+
 ---
 
 ## Paso 1 – Probar en modo demo (sin configurar nada)

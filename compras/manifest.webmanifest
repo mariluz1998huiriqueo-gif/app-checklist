@@ -1,0 +1,10 @@
+{
+  "name": "Compras Heladería",
+  "short_name": "Compras",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f4fbfc",
+  "theme_color": "#2f8f9d",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}

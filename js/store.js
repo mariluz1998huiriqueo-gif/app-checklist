@@ -55,7 +55,7 @@ async function firebaseBackend(cfg) {
   if (!auth.currentUser) await authM.signInAnonymously(auth);
   const q = (c, where) => fs.query(fs.collection(db, c), ...where.map(([f, o, v]) => fs.where(f, o, v)));
   const toDoc = (s) => ({ ...s.data(), id: s.id });
-  const COLLECTIONS = ['workers', 'workerPins', 'shiftTypes', 'tasks', 'checklists', 'alerts'];
+  const COLLECTIONS = ['workers', 'workerPins', 'shiftTypes', 'tasks', 'checklists', 'alerts', 'carry', 'buyers', 'buyerPins', 'shopCategories', 'shopProducts', 'shopItems', 'shopRequests'];
   return {
     mode: 'firebase',
     auth: {

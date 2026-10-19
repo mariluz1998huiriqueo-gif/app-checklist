@@ -249,6 +249,12 @@ function alertText(a) {
   if (a.type === 'cubierta') {
     return `${wName(a.byWorkerId, a.byName)} hizo «${a.text}», que quedó pendiente del turno de ${wName(a.forWorkerId, a.forName)} (${fmtShort(a.date)}).`;
   }
+  if (a.type === 'falta') {
+    return `${wName(a.byWorkerId, a.byName)} avisa que falta: «${a.text}»${a.urgent ? ' (urgente)' : ''}. Revísalo en Compras.`;
+  }
+  if (a.type === 'compra-no') return `Compras: no se pudo comprar «${a.text}»${a.note ? `: “${a.note}”` : '.'}`;
+  if (a.type === 'compra-msg') return `Compras: “${a.note}”`;
+  if (a.type === 'compra-fin') return `Compras: terminaron de comprar (${a.bought} comprado(s)${a.notBought ? `, ${a.notBought} no se pudo` : ''}).`;
   if (a.type === 'reporte') {
     return `${wName(a.byWorkerId, a.byName)} reportó «${a.text}» del turno de ${wName(a.forWorkerId, a.forName)} (${fmtShort(a.date)})${a.checkedBy ? `, que estaba marcada por ${wName(a.checkedBy)}` : ''}${a.note ? `: “${a.note}”` : '.'}`;
   }
@@ -486,6 +492,8 @@ function viewWorker() {
 
       ${notifAsk ? '<button class="btn block" data-act="notif">🔔 Activar alarmas de tareas con hora</button>' : ''}
 
+      <button class="btn block" data-act="missing">⚠️ Falta algo (avisar a administración)</button>
+
       <details class="card normas"><summary>📋 Normas</summary><ul>${NORMAS.map((n) => `<li>${esc(n)}</li>`).join('')}</ul></details>
       ${reminders.length ? `<details class="card normas"><summary>🔁 Durante el día (recordatorios)</summary><ul>${reminders.map((r) => `<li>${esc(r.text)}</li>`).join('')}</ul></details>` : ''}
 
@@ -542,7 +550,7 @@ const TABS = [
 function viewAdmin(tab) {
   const unread = S.alerts.filter((a) => !a.read).length;
   const right = `<a class="bell" href="#/admin/vivo" title="Avisos">🔔${unread ? `<span class="badge">${unread}</span>` : ''}</a><button class="link" data-act="logout">Salir</button>`;
-  const nav = `<nav class="tabs">${TABS.map(([id, n]) => `<a href="#/admin/${id}" class="${id === tab ? 'on' : ''}">${n}</a>`).join('')}</nav>`;
+  const nav = `<nav class="tabs">${TABS.map(([id, n]) => `<a href="#/admin/${id}" class="${id === tab ? 'on' : ''}">${n}</a>`).join('')}<a href="compras/#/admin">🛒 Compras</a></nav>`;
   const body = { vivo: adminLive, turnos: adminShifts, reportes: adminReports, tareas: adminTasks, equipo: adminTeam, ajustes: adminSettings }[tab] || adminLive;
   return `${topbar('Administración', right)}${nav}${demoBanner()}<div class="page">${body()}</div>`;
 }
@@ -1195,6 +1203,24 @@ const ACTIONS = {
       });
     }
     toast('¡Turno terminado! Gracias 🍦');
+  },
+  missing() {
+    openModal('¿Qué falta?', `
+      <label>Producto<input name="text" required maxlength="80" placeholder="Ej: crema, servilletas, nova para vidrios"></label>
+      <label class="check"><input type="checkbox" name="urgent"> 🔴 Urgente (se necesita hoy)</label>
+      <p class="small muted">Le llega solo a administración, que decide si lo agrega a las compras.</p>`, {
+      submitLabel: 'Avisar',
+      async onSubmit(f) {
+        const me = S.session.workerId;
+        const text = f.get('text').trim();
+        const urgent = f.get('urgent') === 'on';
+        const now = Date.now();
+        await store.set('shopRequests', uid(), { text, urgent, byWorkerId: me, byName: wName(me), at: now, status: 'nuevo' });
+        await store.set('alerts', uid(), { type: 'falta', at: now, date: today(), read: false, text, urgent, byWorkerId: me, byName: wName(me) });
+        closeModal();
+        toast('Listo, se avisó a administración');
+      },
+    });
   },
   'item-menu'(el) {
     const c = findChecklist(el.dataset.cl);

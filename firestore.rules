@@ -30,6 +30,17 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/workers/$(session().workerId)).data.active == true;
     }
 
+    // Persona de compras con sesión válida (PIN vigente y activa).
+    function buyerSession() {
+      return get(/databases/$(database)/documents/buyerSessions/$(request.auth.uid)).data;
+    }
+    function isBuyer() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/buyerSessions/$(request.auth.uid))
+        && buyerSession().pin == get(/databases/$(database)/documents/buyerPins/$(buyerSession().buyerId)).data.pin
+        && get(/databases/$(database)/documents/buyers/$(buyerSession().buyerId)).data.active == true;
+    }
+
     // Dueña de la app: se registra una sola vez, con una cuenta de Google.
     match /settings/owner {
       allow read: if signedIn();
@@ -96,7 +107,54 @@ service cloud.firestore {
 
     // Avisos: el equipo los crea, administración los lee y gestiona.
     match /alerts/{id} {
-      allow create: if isAdmin() || (isWorker() && request.resource.data.byWorkerId == session().workerId);
+      allow create: if isAdmin()
+        || (isWorker() && request.resource.data.byWorkerId == session().workerId)
+        || (isBuyer() && request.resource.data.byBuyerId == buyerSession().buyerId);
+      allow read, update, delete: if isAdmin();
+    }
+
+    // ───── Compras ─────
+    // Personas que compran: el nombre es visible para elegirlo al entrar; el PIN solo administración.
+    match /buyers/{id} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+    match /buyerPins/{id} {
+      allow read, write: if isAdmin();
+    }
+    match /buyerSessions/{uid} {
+      allow read, delete: if signedIn() && request.auth.uid == uid;
+      allow create, update: if signedIn() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['buyerId', 'pin', 'at'])
+        && request.resource.data.buyerId is string
+        && request.resource.data.pin is string
+        && exists(/databases/$(database)/documents/buyerPins/$(request.resource.data.buyerId))
+        && get(/databases/$(database)/documents/buyerPins/$(request.resource.data.buyerId)).data.pin == request.resource.data.pin
+        && get(/databases/$(database)/documents/buyers/$(request.resource.data.buyerId)).data.active == true;
+    }
+    // Catálogo: lo ve quien compra; lo edita solo administración. El equipo no lo ve.
+    match /shopCategories/{id} {
+      allow read: if isAdmin() || isBuyer();
+      allow write: if isAdmin();
+    }
+    match /shopProducts/{id} {
+      allow read: if isAdmin() || isBuyer();
+      allow write: if isAdmin();
+    }
+    // Lista de compras: quien compra solo puede marcar estado y comentar.
+    match /shopItems/{id} {
+      allow read: if isAdmin() || isBuyer();
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin() || (isBuyer()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'boughtAt', 'buyerId', 'buyerComment', 'updatedAt'])
+        && request.resource.data.status in ['pendiente', 'comprado', 'no_comprado']
+        && request.resource.data.buyerId == buyerSession().buyerId);
+    }
+    // "Falta algo": el equipo solo puede enviar avisos; no los puede leer.
+    match /shopRequests/{id} {
+      allow create: if isWorker()
+        && request.resource.data.byWorkerId == session().workerId
+        && request.resource.data.status == 'nuevo';
       allow read, update, delete: if isAdmin();
     }
 
