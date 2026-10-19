@@ -257,3 +257,6 @@ table { border-collapse: collapse; width: 100%; }
 .sec .list-row { background: #fff; }
 .card.list .sec { margin: 0; }
 .card.list .sec h3 { position: static; padding: 10px 14px 4px; margin: 0; background: none; }
+.prod-row { display: flex; align-items: stretch; border-bottom: 1px solid var(--line); }
+.prod-row .list-row { border-bottom: 0; flex: 1; }
+.edit-btn { background: none; border: 0; border-left: 1px solid var(--line); padding: 0 16px; color: var(--muted); font-size: 1.1rem; cursor: pointer; }

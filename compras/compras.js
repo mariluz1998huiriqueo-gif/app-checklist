@@ -391,15 +391,18 @@ function adminAdd() {
     <input class="search" type="search" placeholder="Buscar producto…" value="${esc(S.ui.q)}" data-input="q">
     <button class="btn block" data-act="new-product">＋ Producto nuevo${S.ui.q ? `: «${esc(S.ui.q)}»` : ''}</button>
     ${groupByCat(prods, (p) => `
-      <button class="list-row ${inList.has(p.id) ? 'inactive' : ''}" data-act="add-item" data-id="${p.id}">
-        <div>${esc(p.name)}${inList.has(p.id) ? '<div class="small muted">Ya está en la lista</div>' : ''}</div><span>${inList.has(p.id) ? '✓' : '＋'}</span>
-      </button>`)}
+      <div class="prod-row">
+        <button class="list-row ${inList.has(p.id) ? 'inactive' : ''}" data-act="add-item" data-id="${p.id}">
+          <div>${esc(p.name)}${inList.has(p.id) ? '<div class="small muted">Ya está en la lista</div>' : ''}</div><span>${inList.has(p.id) ? '✓' : '＋'}</span>
+        </button>
+        <button class="edit-btn" data-act="edit-product" data-id="${p.id}" title="Editar producto">✎</button>
+      </div>`)}
     ${!prods.length ? '<div class="empty">No hay productos que coincidan.</div>' : ''}`;
 }
 
 function adminCatalog() {
   return `
-    <p class="small muted">Aquí ordenas los productos por categoría. Los cambios no afectan lo que ya está en la lista.</p>
+    <p class="small muted">Toca un producto para cambiarle el nombre o la categoría. Si ya estaba en la lista, se actualiza ahí también.</p>
     ${S.cats.map((c) => {
       const ps = S.products.filter((p) => p.categoryId === c.id);
       return `
@@ -551,6 +554,12 @@ function productModal(id, { cat, name = '', addToList = false, onDone } = {}) {
       const pid = id || uid();
       const data = { name: pname, categoryId: f.get('cat'), active: id ? f.get('active') === 'on' : true };
       await store.set('shopProducts', pid, data);
+      // Si el producto ya estaba en la lista (sin comprar), se actualiza ahí también.
+      if (id) {
+        for (const it of (S.items || []).filter((x) => x.productId === id && x.status !== 'comprado')) {
+          await store.update('shopItems', it.id, { name: data.name, categoryId: data.categoryId, updatedAt: Date.now() });
+        }
+      }
       if (!id && f.get('addNow') === 'on') await createItem({ id: pid, ...data }, f);
       closeModal();
       S.ui.q = '';
